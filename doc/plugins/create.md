@@ -20,7 +20,7 @@ This tutorial builds **paper-reading-notes**. A user supplies a paper or excerpt
 
 Send this in a ScholarSeed conversation:
 
-> Use plugin-create to create a version comparison plugin. Compare the supplied versions and show the item, earlier value, revised value and source in a fixed OpenUI table. Generate a data schema, validate and package the ZIP, then provide an installation card.
+> Use `plugin-create` to build `paper-reading-notes`. After I supply a paper or excerpt, ask whether I want to understand the method or check the evidence. For the method, summarize the research question, steps and conditions where the method applies. For the evidence, summarize the conclusions, supporting evidence and limitations. Cite page numbers or sections in the notes and flag details the source leaves unspecified. Validate the source, package it as a ZIP and show the installation card.
 
 The AI generates the Skill, descriptor, component, and scenarios. Review the source and reports before confirming installation. To revise it, ask `plugin-create` for changes in the same conversation; do not create a second plugin with the same identity.
 

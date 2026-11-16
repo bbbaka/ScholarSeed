@@ -153,7 +153,7 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
 <h2 id="create--让-ai-创建">让 AI 创建</h2>
 <p>在书深对话中发送：</p>
 <blockquote>
-<p>请使用 plugin-create 创建版本对比插件。对比用户提供的两个版本，在固定的 OpenUI 表格中显示条目、旧值、新值和来源。生成业务数据 schema，检查并打包 ZIP，再提供安装卡片。</p>
+<p>请使用 <code>plugin-create</code> 创建 <code>paper-reading-notes</code> 插件。我提供论文或摘录后，先询问阅读重点：理解方法，还是核对证据。理解方法时梳理研究问题、方法步骤与适用条件。核对证据时梳理主要结论、支持证据与局限。笔记附页码或段落位置，并标明原文未说明的细节。检查源码、打包 ZIP，再展示安装卡片。</p>
 </blockquote>
 <p>AI 会生成 Skill、描述符、组件和场景。检查交付的源码和报告后，在安装卡片中确认安装。</p>
 <p>要修改它，在同一对话继续指名 <code>plugin-create</code> 并描述变更；不用重新创建一个相同身份的插件。</p>
@@ -510,7 +510,7 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <li><code>interaction.question</code> 由书深的原生问答流程绑定，没有独立的命令行问答操作。要收集自己的业务选择，按<a href="#create--请求卡片">创建教程</a>使用自定义 slot。</li>
 <li>文献卡片由 <code>literature/result</code>、<code>literature/review</code> 等领域入口建立真实上下文；先查询对应操作的实际契约，不自行拼造数据。</li>
 </ul>
-<p><code>literature.outline</code>、<code>display.literature-review</code> 是已有插件的自定义 slot，不是公共 slot。</p>
+<p>书深在原生综述流程中渲染 <code>literature.outline</code> 并处理大纲确认。<code>display.literature-review</code> 仍是技能包内的自定义 slot。</p>
 <h3 id="cards--slot-怎样找到组件">slot 怎样找到组件</h3>
 <p>前端入口在 <code>apps/desktop/src/renderer/src/features/literature/Component.tsx</code>。<a href="../apps/desktop/src/renderer/src/features/literature/Component.tsx">源码路由</a>节选：</p>
 <pre><code class="language-typescript">const VIEWS = {

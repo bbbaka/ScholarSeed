@@ -153,7 +153,7 @@ footer { border-top: 1px solid var(--line); padding: 24px 0; font-size: 13px; co
 <h2 id="create--ask-the-ai-to-create-it">Ask the AI to Create It</h2>
 <p>Send this in a ScholarSeed conversation:</p>
 <blockquote>
-<p>Use plugin-create to create a version comparison plugin. Compare the supplied versions and show the item, earlier value, revised value and source in a fixed OpenUI table. Generate a data schema, validate and package the ZIP, then provide an installation card.</p>
+<p>Use <code>plugin-create</code> to build <code>paper-reading-notes</code>. After I supply a paper or excerpt, ask whether I want to understand the method or check the evidence. For the method, summarize the research question, steps and conditions where the method applies. For the evidence, summarize the conclusions, supporting evidence and limitations. Cite page numbers or sections in the notes and flag details the source leaves unspecified. Validate the source, package it as a ZIP and show the installation card.</p>
 </blockquote>
 <p>The AI generates the Skill, descriptor, component, and scenarios. Review the source and reports before confirming installation. To revise it, ask <code>plugin-create</code> for changes in the same conversation; do not create a second plugin with the same identity.</p>
 <h2 id="create--write-it-yourself">Write It Yourself</h2>
@@ -509,7 +509,7 @@ python -m service.cli.plugins pack ./paper-reading-notes --name paper-reading-no
 <li><code>interaction.question</code> is bound by the native question flow and has no standalone CLI question operation. For your own choices, use a custom slot from the <a href="#create--request-the-card">creation tutorial</a>.</li>
 <li>Literature cards obtain real context through domain operations such as <code>literature/result</code> and <code>literature/review</code>. Inspect those operations' contracts instead of inventing their data.</li>
 </ul>
-<p><code>literature.outline</code> and <code>display.literature-review</code> are custom slots belonging to existing plugins, not public slots.</p>
+<p>ScholarSeed renders <code>literature.outline</code> and handles outline confirmation through the native literature-review flow. <code>display.literature-review</code> remains a package-local slot.</p>
 <h3 id="cards--how-a-slot-resolves-to-a-component">How a Slot Resolves to a Component</h3>
 <p>The frontend routing lives in <a href="../apps/desktop/src/renderer/src/features/literature/Component.tsx">Component.tsx</a>. Result cards receive <code>content</code> and business-operation <code>ports</code>; choice cards receive <code>data/status/slot/submit</code>. The <code>literature.selection</code> registration is marked <code>legacyOnly</code> for existing bindings and is not a general-purpose question entry for new plugins.</p>
 <p>Inspect all three boundaries before reuse: the public-slot list in <a href="../apps/serve/service/capabilities/service/descriptor.py">descriptor.py</a>, action constraints in <a href="../apps/serve/service/capabilities/service/ui.py">ui.py</a>, and frontend-to-domain mappings in <a href="../apps/desktop/src/renderer/src/features/literature/ports.ts">ports.ts</a>. A visible button alone does not establish a working operation.</p>

@@ -43,7 +43,7 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 - `interaction.question` 由书深的原生问答流程绑定，没有独立的命令行问答操作。要收集自己的业务选择，按[创建教程](create.zh.md#请求卡片)使用自定义 slot。
 - 文献卡片由 `literature/result`、`literature/review` 等领域入口建立真实上下文；先查询对应操作的实际契约，不自行拼造数据。
 
-`literature.outline`、`display.literature-review` 是已有插件的自定义 slot，不是公共 slot。
+书深在原生综述流程中渲染 `literature.outline` 并处理大纲确认。`display.literature-review` 仍是技能包内的自定义 slot。
 
 ### slot 怎样找到组件
 

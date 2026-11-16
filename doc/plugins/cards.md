@@ -43,7 +43,7 @@ Do not fabricate public cards through generic `component/request` or `component/
 - `interaction.question` is bound by the native question flow and has no standalone CLI question operation. For your own choices, use a custom slot from the [creation tutorial](create.md#request-the-card).
 - Literature cards obtain real context through domain operations such as `literature/result` and `literature/review`. Inspect those operations' contracts instead of inventing their data.
 
-`literature.outline` and `display.literature-review` are custom slots belonging to existing plugins, not public slots.
+ScholarSeed renders `literature.outline` and handles outline confirmation through the native literature-review flow. `display.literature-review` remains a package-local slot.
 
 ### How a Slot Resolves to a Component
 

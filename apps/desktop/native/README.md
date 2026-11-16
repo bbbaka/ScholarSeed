@@ -7,6 +7,12 @@ coordination. `acquire(absoluteFile, exclusive)` returns an opaque lease;
 different permanent files: shared-to-exclusive lock conversion is not a
 transaction. Files are never unlinked by this module.
 
+Desktop and Serve resolve registry slots under a SQLite write transaction.
+macOS applies a nonblocking `flock` to each permanent `slot-<number>` file.
+Reclaiming a mapping leaves its file in place for slot reuse. The `flock:`
+binding identifies the macOS protocol and rejects an existing range-lock
+binding. Windows uses byte offsets on the bound shared file.
+
 POSIX slot creation uses `O_CREAT | O_EXCL`; only `EEXIST` permits opening the
 existing slot without `O_CREAT`. This avoids the observed concurrent ordinary
 `O_CREAT` failure on macOS without retrying `ENOENT`. If the slot disappears
@@ -111,6 +117,31 @@ creation and FlushFileBuffers; macOS flushes the file and parent directory.
 Failure retains any partial record for the owning protocol to recover, rather
 than deleting evidence or treating a retry as permission to overwrite it.
 
+Darwin `consumeAt(pin, leaf, expectedBytes, expectedDevice, expectedInode)` consumes
+one nonempty record only while its caller already owns the namespace maintenance
+qualification. Device and inode are canonical unsigned decimal strings, not JS
+numbers. The primitive revalidates the pinned directory's original namespace,
+private leaf permissions, current UID, regular single-link identity, bounded stable
+bytes and leaf binding before `unlinkat`, then synchronizes the parent directory.
+Missing records, replaced inodes, changed bytes, links and zero-byte coordination
+slots refuse consumption. `ERR_LEASE_SYNC` or `ERR_LEASE_RELEASE` means the result
+is uncertain: the pin is poisoned, no retry is permitted, and the owning recovery
+intent must remain until a fresh process requalifies it. Windows returns
+`ERR_LEASE_PLATFORM` before filesystem access; there is no pathname deletion
+fallback. This is an advisory cooperating-writer protocol, not protection against
+same-UID hostile rename, installation authority or a multi-record transaction.
+
+On macOS, `replaceProjectAt(pin, leafName, expectedBytes, nextBytes)` replaces
+an existing project record through a retained project directory pin. Project
+record reads and replacement accept mixed-case leaf names. Both buffers must
+be nonempty and at most 1 MiB. The operation holds a nonblocking exclusive
+directory lock, checks the expected bytes and bound file identity, preserves
+permissions, ACLs and extended attributes, and publishes the replacement by
+renaming the staged file. It synchronizes and revalidates the directory after
+publication. A busy lock or changed original is reported as `ERR_LEASE_BUSY`
+or `ERR_LEASE_CHANGED`. `ERR_LEASE_RESULT_UNKNOWN` after publication requires
+the caller to inspect the current record before attempting another write.
+
 `listAt(pin, maxEntries, maxBytes)` returns own enumerable Buffer properties
 for a dedicated flat record directory, including names such as `__proto__`.
 The limits are 1–4096 entries and 1–1 MiB for both each record and total payload.
@@ -187,6 +218,18 @@ Read failure poisons that domain session: no subsequent read or writer admission
 is allowed. An ordinary failure still permits ordered `close()`; native or domain
 release uncertainty instead retains qualifications until process death. This
 is the metadata-reading boundary, not JSON/schema or generation validation.
+
+After writer admission, `create(root, leaf, bytes)` creates and flushes a new
+private record through the selected root's retained pin. It revalidates all
+bindings before and after `createAt`. Publication remains the caller's atomic
+rename responsibility. This avoids inheriting sandbox-only Windows file ACLs;
+it neither repairs existing directory ACLs nor grants sandbox access to records.
+Creation failure poisons the session under the same close rules as read failure.
+
+写入者准入后，`create(root, leaf, bytes)` 通过所选目录的保留句柄创建并刷盘私有记录，
+在 `createAt` 前后重新验证全部绑定。调用方仍负责原子重命名发布。此方式避免新文件
+继承只有沙箱读取权限的 Windows ACL，不修复已有目录 ACL，也不向沙箱开放记录。
+创建失败后会话失效，关闭规则与读取失败一致。
 
 A recheck pin or other resource close failure reports `ERR_DOMAIN_RELEASE`.
 The session becomes unusable and retains later qualifications until process
@@ -285,6 +328,49 @@ must contain exactly that ordinary, single-link file, with matching size and
 digest; ASAR links and other unpacked dependencies are rejected. Build/Vite and
 signing owners still need to supply the final signed digest and the real startup
 consumer. The integration fixture is not a packaged ScholarSeed acceptance run.
+
+### Explicit macOS recovery gate
+
+The maintenance gate is separate from the unchanged no-argument native compiler
+gate. On the reviewed native macOS/Node host, supply both verified local inputs
+and a nonexistent output under an existing private parent outside the checkout:
+
+```sh
+node apps/desktop/scripts/ci/native-contract.cjs --recovery-maintenance \
+  --output "/absolute/private-parent/new-tool" \
+  --headers "/absolute/verified/node-v24.16.0-headers.tar.gz" \
+  --license "/absolute/verified/NODE-LICENSE.txt"
+```
+
+This builds and resolves the current-source maintenance tool without downloading,
+signing or installing. It serially runs `consumption.test.cjs`,
+`shipit/bridge.test.cjs` and `restoration.test.cjs` against those exact addons and
+self-owned fixtures, not real product records. Missing prerequisites, incomplete
+Node observations, an absent suite, zero cases, any skip/failure, nonzero exit,
+changed tool receipts or changed repository source/HEAD/index fail the gate.
+Do not edit the checkout during execution; an unignored in-repository output also
+changes its source snapshot. The private output retains `native-gate.json`,
+`node-events.jsonl`, `stdout.log`, `stderr.log` and build evidence on failure for
+diagnosis. Passing this native fixture gate does not authorize or prove recovery
+of an installed application's real records.
+
+`observations.cjs` records direct restoration-preparation and checked-close
+fixture execution without changing the command, arguments, timeout or exit
+criteria. Each observation includes the calling time window, returned PID and
+status, caller identity, and executable path snapshots with content hashes.
+These are not exact termination times, kernel image attestations or proof of a
+signal's sender. Environment values are not collected. The evidence leaf is
+reserved exclusively before execution; evidence I/O errors fail the calling
+test independently of the unchanged native result. A disk record cannot attest
+its own write, flush or close: consult the returned observation and test report.
+Abnormal checked-close executions retain both their executable and related
+fixture; successful cases keep their normal cleanup.
+
+A valid on-disk signature is not proof of Gatekeeper admission. SIGKILL alone
+does not identify a security policy or its sender. Keep policy decisions and
+actual termination evidence distinct, preserve failures, and obtain an approved
+development host or trusted artifacts rather than changing policy, signatures,
+launch wrappers, timeouts or retry counts to turn a gate green.
 
 ## Final native artifact staging
 

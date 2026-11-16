@@ -1,5 +1,5 @@
 ---
-id: reference-plugin-runtime
+id: reference-plugin-runtime-zh
 title: Plugin 运行原理
 doc_type: design
 category: skills

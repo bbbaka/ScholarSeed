@@ -1,6 +1,6 @@
 import { parseFindQuery, parsePageTarget } from './browser.ts'
 import type { BrowserPageTarget, FindQuery, FindState } from './browser.ts'
-import { SYSTEM_LANGUAGE_MODE } from './preferences.ts'
+import { SYSTEM_LANGUAGE_MODE, PREFERENCE_THEMES, type PreferenceTheme } from './preferences.ts'
 
 export const MENU_CHANNEL = {
   findState: 'scholarseed:menu-find-state',
@@ -25,6 +25,7 @@ export const MENU_ACTION = {
   browserHistory: 'browser.history',
   browserSettings: 'browser.settings',
   language: 'account.language',
+  appearance: 'account.appearance',
   login: 'account.login',
   logout: 'account.logout',
   settings: 'account.settings',
@@ -44,6 +45,7 @@ export const MENU_ACCOUNT_ACTIONS = [
   MENU_ACTION.profile,
   MENU_ACTION.creditsMore,
   MENU_ACTION.language,
+  MENU_ACTION.appearance,
 ] as const
 export type AccountMenuAction = (typeof MENU_ACCOUNT_ACTIONS)[number]
 const ACCOUNT_MENU_LANGUAGE_CHOICES = ['en', 'zh-CN', SYSTEM_LANGUAGE_MODE] as const
@@ -56,6 +58,7 @@ export interface AccountMenuView {
   logoutError: string | null
   locale: 'en' | 'zh-CN'
   languageMode?: typeof SYSTEM_LANGUAGE_MODE
+  theme?: PreferenceTheme
 }
 export type MenuPresentationReply =
   | { ok: true; revision: number; presentation: 'inline' | 'native' }
@@ -203,8 +206,10 @@ export function parseAccountMenuView(value: unknown): AccountMenuView {
     'logoutError',
     'locale',
     ...('languageMode' in input ? ['languageMode'] : []),
+    ...('theme' in input ? ['theme'] : []),
   ])
   if ('languageMode' in input && input.languageMode !== SYSTEM_LANGUAGE_MODE) invalid()
+  if ('theme' in input && !PREFERENCE_THEMES.includes(input.theme as PreferenceTheme)) invalid()
   const alias = input.alias === null ? null : text(input.alias, MENU_LIMIT.text)
   const avatar = input.avatar === '' ? '' : text(input.avatar, MENU_LIMIT.id)
   if (
@@ -248,6 +253,7 @@ export function parseAccountMenuView(value: unknown): AccountMenuView {
     logoutError: input.logoutError === null ? null : text(input.logoutError, MENU_LIMIT.text),
     locale: input.locale as AccountMenuView['locale'],
     ...(input.languageMode === SYSTEM_LANGUAGE_MODE ? { languageMode: SYSTEM_LANGUAGE_MODE } : {}),
+    ...('theme' in input ? { theme: input.theme as PreferenceTheme } : {}),
   }
 }
 function coordinate(value: unknown, positiveOnly = false): number {

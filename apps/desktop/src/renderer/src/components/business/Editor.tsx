@@ -42,6 +42,7 @@ interface ComposerEditorProps extends Omit<
   typographyClassName?: string
   predictionLabel?: string
   onDismissPrediction?: () => void
+  onTemplateSubmit?: () => void
 }
 
 export const ComposerEditor = React.memo(function ComposerEditor({
@@ -59,9 +60,19 @@ export const ComposerEditor = React.memo(function ComposerEditor({
   typographyClassName = '',
   predictionLabel,
   onDismissPrediction,
+  onTemplateSubmit,
   ...props
 }: ComposerEditorProps): React.JSX.Element {
   const text = React.useSyncExternalStore(draft.subscribe, draft.getSnapshot, draft.getSnapshot)
+  const template = React.useSyncExternalStore(draft.subscribe, draft.getTemplate, draft.getTemplate)
+  const templateInput = React.useRef<HTMLInputElement>(null)
+  const templateActive = template !== null
+  React.useLayoutEffect(() => {
+    if (templateActive) {
+      templateInput.current?.focus()
+      onLayoutChange?.({ multiline: true, above: false, below: false })
+    }
+  }, [templateActive, template?.generation, onLayoutChange])
   const composing = React.useRef(false)
   const referencesRef = React.useRef<HTMLDivElement>(null)
   const [referenceLayout, setReferenceLayout] = React.useState({ indent: 0, top: 0 })
@@ -83,7 +94,7 @@ export const ComposerEditor = React.memo(function ComposerEditor({
     pendingBoundary.current = null
     if (hasReferences && boundary) boundary.focus()
     else inputRef.current?.focus()
-  }, [references, hasReferences, inputRef])
+  }, [references, hasReferences, inputRef, templateActive])
   React.useLayoutEffect(() => {
     const prefix = referencesRef.current
     const input = inputRef.current
@@ -214,7 +225,50 @@ export const ComposerEditor = React.memo(function ComposerEditor({
     props.className,
     props.placeholder,
     referenceLayout,
+    templateActive,
   ])
+  if (template) {
+    return (
+      <div
+        data-testid="composer-template"
+        className={`w-full min-w-0 py-[var(--vds-space-2)] ${typographyClassName}`}
+      >
+        {hasReferences && (
+          <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[var(--vds-space-2)]">
+            {references?.map((reference) => (
+              <React.Fragment key={reference.key}>{reference.content}</React.Fragment>
+            ))}
+          </div>
+        )}
+        <div className="whitespace-pre-wrap break-words leading-[var(--vds-lh-body-lv2)]">
+          {template.prefix}
+          <span className="my-[var(--vds-space-1)] inline-block w-full align-middle sm:w-2/3">
+            <Input
+              ref={templateInput}
+              data-testid="composer-template-field"
+              aria-label={template.label}
+              value={template.value}
+              placeholder={template.placeholder}
+              disabled={props.disabled || props.readOnly}
+              className="bg-[var(--vds-brand-light-bg-default)]"
+              onChange={(event) => {
+                draft.fillTemplate(event.target.value)
+                onDismissPrediction?.()
+                onChange()
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  onTemplateSubmit?.()
+                }
+              }}
+            />
+          </span>
+          {template.suffix}
+        </div>
+      </div>
+    )
+  }
   const editor = (
     <Textarea
       {...props}

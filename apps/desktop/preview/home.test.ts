@@ -10,6 +10,7 @@ import { PROJECT_NAME_MAX } from '../src/renderer/src/contracts/content.ts'
 import { PREVIEW_LOGIN } from './accounts.ts'
 import {
   pdfeTitle,
+  pdfeSceneClipboard,
   pdfePageMatches,
   pdfePageIdentityMatches,
   pdfeScenarioMatches,
@@ -377,6 +378,15 @@ test('project-center labels and search use localized resources and counts from t
       zh: { preview: zh },
       en: { preview: en },
     }).getFixedT(null, 'preview' as never) as unknown as PdfeTranslate
+    const standard = page.scenarios.find((scene) => scene.id === 'home-states')!
+    const titleOnly = { ...standard, titleKey: undefined, title: 'Scene' }
+    const compact = pdfeSceneClipboard(page, standard, translate).split('\n')
+    const extra = pdfeSceneClipboard(page, titleOnly, translate).split('\n')
+    assert.equal(compact.length, 3)
+    assert.equal(extra.length, 4)
+    assert.ok(extra[1].includes(translate('sceneCopyHomeData', { projects: 1, tasks: 1 })))
+    assert.deepEqual(extra.slice(-2), compact.slice(-2))
+    assert.equal(pdfeSceneClipboard(page, { ...titleOnly, home: undefined }, translate).split('\n').length, 3)
     assert.equal(
       pdfeTitle(page, translate),
       language === 'zh' ? zh.pageProjectCenter : en.pageProjectCenter

@@ -1,4 +1,13 @@
 {
+  "revision": {
+    "edit": "编辑",
+    "input": "消息内容",
+    "attach": "添加文件",
+    "cancel": "取消",
+    "submit": "发送并新建任务分支",
+    "submitting": "正在创建分支…",
+    "failed": "未能创建分支，编辑内容已保留，请重试。"
+  },
   "validation": {
     "required": "此项为必填项",
     "choice": "请至少选择一项",

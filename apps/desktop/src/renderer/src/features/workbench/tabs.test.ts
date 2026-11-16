@@ -35,6 +35,23 @@ import {
   type WorkbenchTab,
 } from './tabs.ts'
 
+test('discovery owns its search tabs and returns to its feed when closing', () => {
+  const feed = FIXED_TAB_BY_VIEW.discovery
+  const search: WorkbenchTab = {
+    ...literatureSearchTab('query', 'reasoning'),
+    navigationView: 'discovery',
+  }
+  assert.equal(workbenchTabVisible(feed, 'discovery'), true)
+  assert.equal(workbenchTabVisible(feed, 'literature'), false)
+  assert.equal(workbenchTabVisible(search, 'discovery'), true)
+  assert.equal(workbenchTabVisible(search, 'literature'), false)
+  assert.equal(mainViewForWorkbenchTab(search), 'discovery')
+  assert.equal(
+    closeTab([feed, search], search.id, search.id, { view: 'discovery' }).activeId,
+    feed.id
+  )
+})
+
 test('document focus recovery cannot replace an open page that just left the dock', () => {
   assert.equal(
     shouldRestoreDocumentFocus({
@@ -72,6 +89,26 @@ test('activating an existing browser tab does not insert a default browser tab',
   const browser = { ...FIXED_TAB_BY_VIEW.browser, id: 'existing-browser', browserPageId: 'page' }
   const tabs = [browser]
   assert.equal(openWorkbenchTab(tabs, 'browser', browser), tabs)
+})
+
+test('a literature source opens after the library and retains its navigation scope', () => {
+  const source: WorkbenchTab = {
+    ...FIXED_TAB_BY_VIEW.browser,
+    id: 'paper-source',
+    browserPageId: 'paper-page',
+    navigationView: 'literature',
+  }
+  const tabs = openFixedTab([LITERATURE_TAB], source)
+  assert.deepEqual(
+    tabs.map((tab) => tab.id),
+    [LITERATURE_TAB.id, source.id]
+  )
+  assert.equal(mainViewForWorkbenchTab(source), 'literature')
+  assert.equal(workbenchTabVisible(source, 'resource'), false)
+  assert.equal(
+    closeTab(tabs, source.id, source.id, { view: 'literature' }).activeId,
+    LITERATURE_TAB.id
+  )
 })
 
 test('Canvas tabs are visible and eligible as close fallbacks only in their own session', () => {
@@ -524,10 +561,18 @@ test('browser is a closable workbench surface sharing project tabs and new tabs'
     openWorkbenchTab([OVERVIEW_TAB], 'browser', browser, createAvailabilityPolicy(false)),
     [OVERVIEW_TAB]
   )
-  for (const view of ['home', 'projects', 'literature', 'writing']) {
+  for (const view of ['home', 'projects', 'writing']) {
     assert.equal(tabVisibleInCurrentView(browser.kind, view), false)
   }
   assert.equal(tabVisibleInCurrentView('browser', 'resource', createAvailabilityPolicy(true)), true)
+  assert.equal(
+    tabVisibleInCurrentView('browser', 'literature', createAvailabilityPolicy(true)),
+    true
+  )
+  assert.equal(
+    tabVisibleInCurrentView('literature', 'browser', createAvailabilityPolicy(true)),
+    true
+  )
   for (const kind of ['file', 'new_tab', 'library', 'explorer'] as const)
     assert.equal(tabVisibleInCurrentView(kind, 'browser', createAvailabilityPolicy(true)), true)
   const blank = newProjectTab('alpha')

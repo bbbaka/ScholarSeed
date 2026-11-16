@@ -81,6 +81,10 @@ bool directory_create(struct directory *directory, const char *name, const unsig
 bool directory_consume(struct directory *directory, const char *name, const unsigned char *expected,
                        size_t length, uint64_t device, uint64_t inode, struct directory_error *error);
 #ifdef __APPLE__
+bool directory_replace_project(struct directory *directory, const char *name,
+                               const unsigned char *expected, size_t expected_length,
+                               const unsigned char *next, size_t next_length,
+                               struct directory_error *error);
 bool directory_prune_lock_only(struct directory *directory, const char *name, bool *removed,
                                struct directory_error *error);
 #endif

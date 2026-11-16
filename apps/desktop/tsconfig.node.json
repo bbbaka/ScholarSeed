@@ -15,6 +15,7 @@
     "src/images.ts",
     "src/fonts.ts",
     "src/pdfe.ts",
+    "src/iterations.ts",
     "src/browser.ts",
     "src/browserdiagnostics.ts",
     "src/startup.ts",

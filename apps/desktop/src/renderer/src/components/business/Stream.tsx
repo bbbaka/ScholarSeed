@@ -9,7 +9,10 @@ import {
 import { markdownSummary } from '../../../../markdown/summary.ts'
 import { OPENUI_SLOT } from '../../../../../../../packages/ui/document'
 import { CANVAS_SLOT } from '../../../../../../../packages/ui/canvas'
-import { WebNavigationContext } from '../../contracts/navigation'
+import { MessageRevisionContext, WebNavigationContext } from '../../contracts/navigation'
+import { MessageRevisionEditor } from './Revision'
+import { upsertSessionNode } from '../../tree'
+import { Pencil } from 'lucide-react'
 import { LiteratureAuthorizationCard } from '../../features/literature/Scope'
 import { fulltextSelection } from '../../features/literature/interaction'
 import {
@@ -28,6 +31,7 @@ import type { PluginMount } from '../../../../plugins'
 import { availabilityPolicy } from '../../app/policy'
 import { attentionRequest, matchingAttentionAnchors } from '../../attention'
 import { referenceBaseLabel } from '../../features/assistant/text'
+import { ConversationFinder } from '../../features/assistant/Finder'
 import { isSelectionReference, selectionReferenceGroups } from '../../features/assistant/contexts'
 import { SelectionReference } from './Conversation'
 import { ForkOriginDivider } from '../../features/assistant/Branch'
@@ -235,6 +239,7 @@ import {
   useCardArtifacts,
   useLatestDisplayCards,
   usePostDeliveryCardTypes,
+  useAnswerCardTypes,
 } from './Cards'
 import { useInteractionPolicies } from './Interactions'
 import {
@@ -544,11 +549,17 @@ function useScrollControlPlacement(
 export function Stream({
   home = false,
   onOpenDelivery,
+  findOpen = false,
+  findRequest = 0,
+  onFindClose,
   scrollControlTarget = null,
 }: {
   home?: boolean
   scrollControlTarget?: HTMLDivElement | null
   onOpenDelivery?: (member: DeliveryCardMember) => void
+  findOpen?: boolean
+  findRequest?: number
+  onFindClose?: () => void
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { state, set, patchThread, getSnapshot } = useApp()
@@ -568,6 +579,7 @@ export function Stream({
   const skillNames = useSkillNames(state.backendReady && hasSkillReferences, language)
   const currentConv = useLatestDisplayCards(conv)
   const postDeliveryCardTypes = usePostDeliveryCardTypes()
+  const answerCardTypes = useAnswerCardTypes()
   const pendingHil = pendingHilItems(conv)
   const pendingTurnIds = new Set(pendingHil.map((item) => item.turnId))
   const streamRef = useRef<HTMLDivElement>(null)
@@ -955,9 +967,17 @@ export function Stream({
   }, [busy])
 
   useLayoutEffect(() => {
-    if (!state.aiPanel.messageFocus && focusedSessionRef.current !== thread.sessionId)
+    if (!findOpen && !state.aiPanel.messageFocus && focusedSessionRef.current !== thread.sessionId)
       followScroll.request()
-  }, [busy, conv, showWorking, followScroll, state.aiPanel.messageFocus, thread.sessionId])
+  }, [
+    busy,
+    conv,
+    showWorking,
+    followScroll,
+    state.aiPanel.messageFocus,
+    thread.sessionId,
+    findOpen,
+  ])
 
   useLayoutEffect(() => {
     const focus = state.aiPanel.messageFocus
@@ -1060,12 +1080,19 @@ export function Stream({
     const observer = new ResizeObserver(() => {
       updateFocusSpacer()
       updateScrollToBottomVisibility()
-      if (focusedSessionRef.current !== thread.sessionId) followScroll.request()
+      if (!findOpen && focusedSessionRef.current !== thread.sessionId) followScroll.request()
     })
     observer.observe(columnRef.current)
     if (streamRef.current) observer.observe(streamRef.current)
     return () => observer.disconnect()
-  }, [followScroll, home, thread.sessionId, updateFocusSpacer, updateScrollToBottomVisibility])
+  }, [
+    followScroll,
+    home,
+    thread.sessionId,
+    updateFocusSpacer,
+    updateScrollToBottomVisibility,
+    findOpen,
+  ])
 
   useEffect(() => {
     const stream = streamRef.current
@@ -1293,6 +1320,14 @@ export function Stream({
             ))}
           </nav>
         )}
+      {findOpen && onFindClose && (
+        <ConversationFinder
+          key={threadKey}
+          root={streamRef}
+          focusRequest={findRequest}
+          onClose={onFindClose}
+        />
+      )}
       <div
         ref={streamRef}
         onWheel={(event) => {
@@ -1312,6 +1347,7 @@ export function Stream({
           resumeFollowOnScroll.current = false
         }}
         className={cx(
+          '[&::highlight(conversation-find-match)]:bg-[var(--vds-warning-light-bg-active)] [&::highlight(conversation-find-active)]:bg-[var(--vds-warning-bg-default)] [&::highlight(conversation-find-active)]:text-[var(--vds-text-primary)]',
           'conversation-stream [--vds-card-radius:var(--vds-radius-6)] [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
           home ? 'pt-0' : 'pt-[var(--vds-space-4)]',
           scrollOverlap &&
@@ -1393,6 +1429,25 @@ export function Stream({
                   const next = rows[index + 1]
                   if (
                     row.kind === 'item' &&
+                    row.item.kind === 'display_card' &&
+                    row.item.turnId &&
+                    turnsWithFinalAgent.has(row.item.turnId) &&
+                    answerCardTypes.has(row.item.card.type)
+                  )
+                    return null
+                  const answerCards =
+                    finalAgentRows.has(index) && row.kind === 'item'
+                      ? rows.flatMap((candidate) =>
+                          candidate.kind === 'item' &&
+                          candidate.item.kind === 'display_card' &&
+                          candidate.item.turnId === row.item.turnId &&
+                          answerCardTypes.has(candidate.item.card.type)
+                            ? [candidate.item]
+                            : []
+                        )
+                      : []
+                  if (
+                    row.kind === 'item' &&
                     row.item.turnId &&
                     isUserStoppedStatus(row.item) &&
                     turnsWithFinalAgent.has(row.item.turnId)
@@ -1459,7 +1514,7 @@ export function Stream({
                             : undefined
                         }
                         trailingContent={
-                          attachedArtifacts || stoppedNotice ? (
+                          attachedArtifacts || stoppedNotice || answerCards.length > 0 ? (
                             <>
                               {attachedArtifacts && (
                                 <ArtifactCard
@@ -1468,6 +1523,11 @@ export function Stream({
                                 />
                               )}
                               {stoppedNotice && <StatusLine item={stoppedNotice} />}
+                              {answerCards.map((item) => (
+                                <div key={item.card.cardId} className="mt-[var(--vds-space-4)]">
+                                  <DisplayCardView card={item.card} turnId={item.turnId} />
+                                </div>
+                              ))}
                             </>
                           ) : undefined
                         }
@@ -6431,11 +6491,26 @@ function UserBubble({
 }): React.JSX.Element {
   const { t, i18n: localization } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
+  const { t: conversationText } = useTranslation('conversation')
+  const reviseMessage = useContext(MessageRevisionContext)
+  const [editing, setEditing] = useState(false)
   const displayText = item.displayMessage
     ? renderFeedback(localization, item.displayMessage)
     : item.text
   const hasMessageText = Boolean(displayText.trim())
-  const { state, act } = useApp()
+  const { state, act, set } = useApp()
+  const thread = activeThread(state)
+  const firstUser = thread.conversation.find((entry) => entry.kind === 'user')
+  const canEdit = Boolean(
+    reviseMessage &&
+    thread.sessionId &&
+    !thread.readOnly &&
+    !running &&
+    !item.steer &&
+    item.itemId &&
+    item.turnId &&
+    firstUser?.turnId !== item.turnId
+  )
   const displayRefs = (item.refs ?? []).map((reference) =>
     reference.type === 'assistant_context' &&
     reference.kind === 'file' &&
@@ -6571,6 +6646,37 @@ function UserBubble({
       setError(reason)
       setRestoring(false)
     }
+  }
+  if (editing && canEdit) {
+    return (
+      <MessageRevisionEditor
+        text={item.text}
+        references={item.refs ?? []}
+        onCancel={() => setEditing(false)}
+        onSubmit={async (text, references, requestId) => {
+          if (!reviseMessage || !thread.sessionId || !item.itemId || !item.turnId) return
+          const result = await reviseMessage({
+            sessionId: thread.sessionId,
+            itemId: item.itemId,
+            turnId: item.turnId,
+            text,
+            references,
+            requestId,
+          })
+          set((current) => ({
+            sessions: upsertSessionNode(current.sessions, {
+              id: result.sessionId,
+              title: result.title,
+              status: 'running',
+              projectPath: result.projectPath,
+            }),
+            sessionCatalogRevision: current.sessionCatalogRevision + 1,
+          }))
+          setEditing(false)
+          act.openSession(result.sessionId, { itemId: result.itemId, turnId: result.turnId })
+        }}
+      />
+    )
   }
   return (
     <>
@@ -6869,7 +6975,11 @@ function UserBubble({
                   reference={reference}
                 />
               ))}
-              {hasMessageText && <UserMessageText text={displayText} />}
+              {hasMessageText && (
+                <div data-conversation-search-text>
+                  <UserMessageText text={displayText} />
+                </div>
+              )}
             </div>
             {confirming &&
               createPortal(
@@ -6910,6 +7020,15 @@ function UserBubble({
               >
                 <Copy size={14} />
               </CopyButton>
+              {canEdit && (
+                <IconButton
+                  size="xs"
+                  variant="ghost"
+                  label={conversationText('revision.edit')}
+                  icon={<Pencil size={14} />}
+                  onClick={() => setEditing(true)}
+                />
+              )}
             </MessageActions>
           )}
         </div>
@@ -7442,7 +7561,10 @@ function AgentMsg({
     <div className="group/message" style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         {!empty ? (
-          <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_backwards]">
+          <div
+            data-conversation-search-text
+            className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_backwards]"
+          >
             <AnnotatedAnswer
               loadRemoteImage={loadAnswerImage}
               pending={Boolean(item.turnId && owner.turnOutcomes?.[item.turnId] === 'running')}

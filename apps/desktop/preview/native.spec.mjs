@@ -1,19 +1,20 @@
 import { test, expect, _electron } from '@playwright/test'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createServer } from 'vite'
-import { buildPdfe, pdfeEnvironment } from '../scripts/dev/pdfe.mjs'
+import { buildPdfe, createPdfeServer, pdfeLaunchEnvironment } from '../scripts/dev/pdfe.mjs'
 import { PREVIEW_CATALOG } from './catalog.ts'
+import { PDFE_ITERATION_FILENAME, PDFE_ITERATION_WORKTREE_ENV } from '../src/iterations.ts'
 import { PREVIEW_HOME } from './home.ts'
 import { PREVIEW_ARCHIVE } from './archive.ts'
 import { conversationEntries } from '../src/renderer/src/components/examples/navigation.ts'
 import { API_DIAGNOSTIC_PREFIX, SESSION_CATALOG_PATH } from '../src/requests.ts'
 import { NOTIFICATION_PATH } from '../src/notifications.ts'
 import { previewConsumption } from './coverage.ts'
-import { parsePdfeManifest, PDFE_CONTROL_SIZE, PDFE_DOCK_STEP, pdfeDockWidth, pdfeWindowWidth, PREVIEW_INSTANCE_PARAMETER, PREVIEW_PAGE_PARAMETER, PREVIEW_SCENE_PARAMETER } from '../src/pdfe.ts'
+import { parsePdfeManifest, PDFE_CONTROL_SIZE, PDFE_DIAGNOSTIC_PATH, PDFE_DOCK_STEP, pdfeDockWidth, pdfeWindowWidth, PREVIEW_INSTANCE_PARAMETER, PREVIEW_PAGE_PARAMETER, PREVIEW_SCENE_PARAMETER } from '../src/pdfe.ts'
 import { WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM } from '../src/window.ts'
 import zh from './locales/zh.json' with { type: 'json' }
 import en from './locales/en.json' with { type: 'json' }
@@ -31,6 +32,9 @@ import { PREVIEW_OFFICE_FRAME_PATH, previewOfficeFrameParameters } from './frame
 import { PREVIEW_CONTENT } from './content.ts'
 import { PREVIEW_ARTIFACTS } from './publications.ts'
 import { PREVIEW_CONVERSATION } from './conversation.ts'
+import { PREVIEW_CREATED_SCHEDULE } from './scheduling.ts'
+import schedulesZh from '../src/localization/locales/zh/schedules.json' with { type: 'json' }
+import schedulesEn from '../src/localization/locales/en/schedules.json' with { type: 'json' }
 import { previewContextReferences, previewDraftReferences } from './references.ts'
 import layoutZh from '../src/localization/locales/zh/layout.json' with { type: 'json' }
 import layoutEn from '../src/localization/locales/en/layout.json' with { type: 'json' }
@@ -66,6 +70,8 @@ const require = createRequire(import.meta.url)
 const desktop = fileURLToPath(new URL('..', import.meta.url))
 
 const INITIAL_TARGET_ANNOTATION = 'pdfe-initial-target'
+const MISSING_ITERATION_ANNOTATION = 'pdfe-missing-iteration-manifest'
+const EDIT_ITERATION_ANNOTATION = 'pdfe-edit-iteration-manifest'
 const MATERIALS_INITIAL_TARGET = { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'development-components', sceneId: 'components-states' }) }
 const NATIVE_EVIDENCE_ROLES = ['product', 'controls']
 const NATIVE_EVIDENCE_STATUS = { captured: 'captured', hidden: 'hidden', unavailable: 'unavailable', failed: 'failed' }
@@ -113,7 +119,16 @@ let product
 
 let controls
 
+let grantDiagnostics
+
+let diagnosticGrant
+let iterationFixture
+let launchEnvironment
+
 test.beforeAll(async () => {
+  const runtime = await createPdfeServer({ strictPort: false })
+  server = runtime.server
+  grantDiagnostics = runtime.grantDiagnostics
   server = await createServer({ configFile: resolve(desktop, 'vite.preview.config.ts'), clearScreen: false, server: { strictPort: false } })
   // Native acceptance runs against fixed source; metadata-only file events must not reset a scenario.
   await server.watcher.close()
@@ -130,13 +145,26 @@ test.beforeEach(async ({}, testInfo) => {
   const initial = requested ? JSON.parse(requested.description) : manifest.initial
   const configured = parsePdfeManifest({ ...manifest, initial })
   writeFileSync(resolve(application, 'pdfe.json'), JSON.stringify(configured), { mode: 0o600 })
-  app = await _electron.launch({ executablePath: require('electron'), args: [application], env: pdfeEnvironment({ ...process.env, OPENAI_API_KEY: 'pdfe-test-must-not-forward' }), timeout: 60_000 })
+  diagnosticGrant = grantDiagnostics(configured.instance)
+  iterationFixture = undefined
+  const editing = testInfo.annotations.some(annotation => annotation.type === EDIT_ITERATION_ANNOTATION)
+  const env = pdfeLaunchEnvironment(diagnosticGrant, { ...process.env, OPENAI_API_KEY: 'pdfe-test-must-not-forward' }, editing)
+  if (editing || testInfo.annotations.some(annotation => annotation.type === MISSING_ITERATION_ANNOTATION)) {
+    const root = testInfo.outputPath('iteration-worktree')
+    mkdirSync(root, { recursive: true })
+    execFileSync('git', ['-C', root, 'init', '--quiet'])
+    env[PDFE_ITERATION_WORKTREE_ENV] = realpathSync(root)
+    iterationFixture = resolve(root, PDFE_ITERATION_FILENAME)
+    if (editing) writeFileSync(iterationFixture, readFileSync(resolve(desktop, '../..', PDFE_ITERATION_FILENAME)))
+  }
+  launchEnvironment = env
+  app = await _electron.launch({ executablePath: require('electron'), args: [application], env, timeout: 60_000 })
   await expect.poll(() => app.windows().filter(page => page.url().includes('pdfe=')).length).toBe(2)
   product = app.windows().find(page => new URL(page.url()).searchParams.get('pdfe') === 'product')
   controls = app.windows().find(page => new URL(page.url()).searchParams.get('pdfe') === 'controls')
   await expect(product).toHaveURL(url => url.searchParams.get('page') === initial.pageId && url.searchParams.get('scene') === initial.sceneId)
   await expect(controls).toHaveURL(url => url.searchParams.get('page') === initial.pageId && url.searchParams.get('scene') === initial.sceneId)
-  if (!requested) await expect(product.getByTestId('home-project-设计协作项目')).toBeVisible()
+  if (!requested) await expect(product.getByTestId('home-project-设计协作项目')).toBeVisible({ timeout: DIALOG_ACTION_TIMEOUT_MS })
   await expect(controls.getByRole('heading', { name: 'PDFE 工作台', exact: true })).toBeVisible()
 })
 
@@ -207,6 +235,7 @@ test.afterEach(async ({}, testInfo) => {
   } catch (error) {
     failures.push(error)
   }
+  diagnosticGrant?.revoke()
   try {
     if (manifest) {
       const response = await fetch(manifest.origin + '/__preview/state?previewInstance=' + manifest.instance, { method: 'DELETE', signal: AbortSignal.timeout(DIALOG_ACTION_TIMEOUT_MS) })
@@ -219,6 +248,744 @@ test.afterEach(async ({}, testInfo) => {
 })
 
 test.afterAll(async () => { await server?.close() })
+
+test('native message revision edits inline and opens an independent branch', {
+  annotation: { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'page-conversation', sceneId: 'conversation-editing' }) },
+}, async ({}, testInfo) => {
+  const original = '面向博士生，重点比较证据溯源能力，结合附件整理成对照表，并列出各工具的使用限制。'
+  const edit = product.getByRole('button', { name: '编辑', exact: true })
+  await expect(edit).toHaveCount(2)
+  await product.getByText(original, { exact: true }).hover()
+  await edit.first().click()
+  const editor = product.getByTestId('message-revision-editor')
+  const input = editor.getByRole('textbox', { name: '消息内容', exact: true }).last()
+  await expect(input).toHaveValue(original)
+  await expect(input).toBeFocused()
+  expect(await input.evaluate(element => element.selectionStart)).toBe(original.length)
+  await expect(editor.getByText('编辑消息', { exact: true })).toHaveCount(0)
+  await expect(editor.getByText(/Enter 发送/)).toHaveCount(0)
+  await expect(editor.getByText('科研工具调研笔记.pdf', { exact: true })).toBeVisible()
+  const attachment = editor.getByText('科研工具调研笔记.pdf', { exact: true })
+  await attachment.hover()
+  await editor.getByRole('button', { name: '关闭标签', exact: true }).click()
+  await expect(attachment).toHaveCount(0)
+  const fileChooser = product.waitForEvent('filechooser')
+  await editor.getByRole('button', { name: '添加文件', exact: true }).click()
+  await (await fileChooser).setFiles({ name: '比较维度.txt', mimeType: 'text/plain', buffer: Buffer.from('证据溯源、中文文献支持') })
+  await expect(editor.getByText('比较维度.txt', { exact: true })).toBeVisible()
+  await input.fill('   ')
+  await expect(editor.getByRole('button', { name: '发送并新建任务分支', exact: true })).toBeDisabled()
+  await input.press('Escape')
+  await expect(editor).toHaveCount(0)
+  await expect(product.getByText(original, { exact: true })).toBeVisible()
+  await product.getByText(original, { exact: true }).hover()
+  await edit.first().click()
+  await expect(attachment).toBeVisible()
+  await input.press('Shift+Enter')
+  await expect(input).toHaveValue(original + '\n')
+  await input.fill('面向博士生，比较证据溯源与中文文献支持，结合附件给出对照表。')
+  await product.screenshot({ path: testInfo.outputPath('revision-editor.png'), animations: 'disabled' })
+  await product.route('**/revise-message', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }), { times: 1 })
+  await input.press('Enter')
+  await expect(editor.getByText('未能创建分支，编辑内容已保留，请重试。', { exact: true })).toBeVisible()
+  await expect(input).toHaveValue('面向博士生，比较证据溯源与中文文献支持，结合附件给出对照表。')
+  const window = await app.browserWindow(product)
+  await window.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
+  await expect(editor.getByRole('button', { name: '发送并新建任务分支', exact: true })).toBeVisible()
+  await editor.getByRole('button', { name: '发送并新建任务分支', exact: true }).scrollIntoViewIfNeeded()
+  await product.screenshot({ path: testInfo.outputPath('revision-editor-narrow.png'), animations: 'disabled' })
+  await input.press('Enter')
+  await expect(editor).toHaveCount(0)
+  await expect(product.getByText('面向博士生，比较证据溯源与中文文献支持，结合附件给出对照表。', { exact: true })).toBeVisible()
+  await expect(product.getByText('再补充对中文文献的支持情况。', { exact: true })).toHaveCount(0)
+  await expect(product.getByText('分支 · 科研 AI 工具比较', { exact: true }).first()).toBeVisible()
+  await expect(edit).toHaveCount(0)
+  await expect(product.getByText(/开始模拟长回答/).first()).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('revision-branch.png'), animations: 'disabled' })
+  await product.getByText('科研 AI 工具比较', { exact: true }).first().click()
+  await expect(product.getByText(original, { exact: true })).toBeVisible()
+  await expect(product.getByText('再补充对中文文献的支持情况。', { exact: true })).toBeVisible()
+})
+
+test('native diagnostic read requires the active top-level controls and a private grant', async ({}, testInfo) => {
+  const original = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  expect(original).toMatchObject({ pageId: 'page-home', scene: 'home-browse', generation: expect.any(String), requests: expect.any(Array), streams: expect.any(Array) })
+  expect(await product.evaluate(() => typeof window.pdfe.readDiagnostics)).toBe('undefined')
+  expect(await controls.evaluate(() => {
+    const frame = document.createElement('iframe')
+    document.body.append(frame)
+    try { return typeof frame.contentWindow.pdfe }
+    finally { frame.remove() }
+  })).toBe('undefined')
+  expect(await controls.evaluate(productUrl => new Promise(resolve => {
+    const frame = document.createElement('iframe')
+    document.addEventListener('securitypolicyviolation', event => {
+      frame.remove()
+      resolve(event.effectiveDirective)
+    }, { once: true })
+    frame.src = productUrl
+    document.body.append(frame)
+  }), product.url())).toBe('frame-src')
+  const path = PDFE_DIAGNOSTIC_PATH + '?' + new URLSearchParams({ [PREVIEW_INSTANCE_PARAMETER]: manifest.instance })
+  for (const surface of [product, controls]) {
+    expect(await surface.evaluate(async path => (await fetch(path)).status, path)).toBe(403)
+  }
+  const initialUrl = product.url()
+  const replay = []
+  controls.on('request', request => {
+    if (/\/(?:api|__preview)\//.test(new URL(request.url()).pathname)) replay.push(request.url())
+  })
+  await openRequests(zh, false)
+  await expect(controls.getByTestId('preview-diagnostic-history')).toBeVisible()
+  await controls.screenshot({ path: testInfo.outputPath('diagnostics-auto-loaded.png'), animations: 'disabled' })
+  await controls.getByRole('tab', { name: zh.featureSection, exact: true }).click()
+  expect(product.url()).toBe(initialUrl)
+  expect((await controls.evaluate(() => window.pdfe.readDiagnostics())).generation).toBe(original.generation)
+  expect(replay).toEqual([])
+  await scenario('page-home', 'home-no-tasks')
+  const next = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  expect(next.scene).toBe('home-no-tasks')
+  expect(next.generation).not.toBe(original.generation)
+  await openRequests()
+  diagnosticGrant.revoke()
+  await expect(controls.getByRole('alert')).toHaveText(zh.diagnosticStale)
+  await controls.screenshot({ path: testInfo.outputPath('diagnostics-stale.png'), animations: 'disabled' })
+})
+
+test('native diagnostics show file writes and notification lifecycle without raw data', async ({}, testInfo) => {
+  await scenario('page-resource', 'resource-browse')
+  await product.getByTestId('project-library').click()
+  await selectNativeLibraryCategory(layoutZh.materials)
+  const filename = 'readme.md'
+  const marker = 'Native diagnostic private content'
+  await product.getByTestId('material-' + filename).getByRole('button', { name: filename, exact: true }).click()
+  await product.getByTestId('markdown-mode-select').click()
+  await product.getByTestId('markdown-open-editor').click()
+  const editor = product.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+  await expect(editor).toContainText('Minimal Project')
+  const read = () => controls.evaluate(() => window.pdfe.readDiagnostics())
+  await expect.poll(async () => (await read()).streams.some(record => record.kind === 'file' && record.phase === 'open')).toBe(true)
+  const saving = product.waitForResponse(response => new URL(response.url()).pathname === '/api/workbench/content' && response.request().method() === 'PUT')
+  await editor.click()
+  await product.keyboard.press('ControlOrMeta+End')
+  await product.keyboard.insertText(marker)
+  await editor.press('ControlOrMeta+s')
+  expect((await saving).status()).toBe(204)
+  await product.reload()
+  await expect.poll(async () => (await read()).streams.filter(record => record.kind === 'notification' && record.event === 'ready').length).toBeGreaterThanOrEqual(2)
+  const snapshot = await read()
+  expect(snapshot.streams).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'file', phase: 'write', event: 'modified', eventSequence: expect.any(Number), subject: expect.stringMatching(/^project-/) }),
+    expect.objectContaining({ kind: 'notification', phase: 'write', event: 'ready' }),
+  ]))
+  expect(snapshot.streams.some(record => record.kind === 'notification' && ['interrupted', 'closed'].includes(record.phase))).toBe(true)
+  expect(JSON.stringify(snapshot)).not.toContain(filename)
+  expect(JSON.stringify(snapshot)).not.toContain(marker)
+  await openRequests()
+  await controls.getByRole('tab', { name: zh.diagnosticSse, exact: true }).click()
+  const detail = await diagnosticDetails(/文件.*modified/s)
+  await expect(detail).toContainText(zh.diagnosticEventSequence.replace('{{sequence}}', '1'))
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-file-write.png'), animations: 'disabled' })
+  const back = detail.getByRole('button', { name: zh.diagnosticBack, exact: true })
+  await expect(back).toBeFocused()
+  await back.press('Enter')
+  await expect(controls.getByTestId('preview-diagnostic-history').getByRole('button').filter({ hasText: /文件.*modified/s }).first()).toBeFocused()
+  await diagnosticDetails(/通知.*ready/s)
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-notification-ready.png'), animations: 'disabled' })
+})
+
+async function openRequests(dictionary = zh, waitForRecords = true) {
+  const tab = controls.getByRole('tab', { name: dictionary.diagnosticTab, exact: true })
+  if (await tab.getAttribute('aria-selected') !== 'true') await tab.click()
+  if (waitForRecords) await expect(controls.getByRole('searchbox', { name: dictionary.diagnosticSearch })).toBeVisible()
+}
+
+async function diagnosticDetails(text, dictionary = zh) {
+  const history = controls.getByTestId('preview-diagnostic-history')
+  await history.getByRole('button').filter({ hasText: text }).first().click()
+  const detail = controls.getByTestId('preview-diagnostic-detail')
+  await expect(detail).toBeVisible()
+  return detail
+}
+
+test('native PDFE captures one annotation and copies the image without a feedback form', async ({}, testInfo) => {
+  expect(await product.evaluate(() => typeof window.pdfe.captureScreenshot)).toBe('undefined')
+  const surface = async role => (await nativeEvidenceSurfaces()).find(entry => entry.role === role)
+  const originalControls = await surface('controls')
+  const originalProduct = await surface('product')
+  await expect(controls.getByRole('button', { name: zh.reset, exact: true })).toHaveCount(0)
+  await expect(controls.getByRole('button', { name: zh.close, exact: true })).toHaveCount(0)
+  await controls.getByRole('button', { name: zh.screenshotMark, exact: true }).click()
+  const editor = product.getByRole('dialog', { name: zh.screenshotMark, exact: true })
+  const canvas = editor.locator('canvas')
+  const copy = editor.getByRole('button', { name: '复制图片', exact: true })
+  await expect(copy).toBeEnabled()
+  expect(await surface('controls')).toMatchObject({ windowId: originalControls.windowId, bounds: originalControls.bounds })
+  await expect(controls.getByRole('dialog', { name: zh.screenshotMark, exact: true })).toHaveCount(0)
+  expect((await surface('product')).bounds).toEqual(originalProduct.bounds)
+  expect(await editor.evaluate(element => {
+    const bounds = element.getBoundingClientRect()
+    return { left: bounds.left, top: bounds.top, width: bounds.width - innerWidth, height: bounds.height - innerHeight }
+  })).toEqual({ left: 0, top: 0, width: 0, height: 0 })
+  await expect(editor.getByTestId('feedback-annotator-surface')).toHaveCSS('background-image', /conic-gradient/)
+  await expect(editor.getByRole('textbox', { name: '问题说明' })).toHaveCount(0)
+  await expect(editor.getByRole('button', { name: '保存截图', exact: true })).toHaveCount(0)
+  const before = await canvas.evaluate(element => element.toDataURL())
+  const bounds = await canvas.boundingBox()
+  expect(bounds).not.toBeNull()
+  const mark = async (start, end) => {
+    await editor.getByRole('button', { name: '矩形', exact: true }).click()
+    await product.mouse.move(bounds.x + bounds.width * start, bounds.y + bounds.height * start)
+    await product.mouse.down()
+    await product.mouse.move(bounds.x + bounds.width * end, bounds.y + bounds.height * end, { steps: 5 })
+    await product.mouse.up()
+  }
+  await mark(0.2, 0.36)
+  await expect.poll(() => canvas.evaluate(element => element.toDataURL())).not.toBe(before)
+  await mark(0.46, 0.7)
+  const annotated = await canvas.evaluate(element => element.toDataURL())
+  await editor.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect.poll(() => canvas.evaluate(element => element.toDataURL())).toBe(before)
+  await mark(0.46, 0.7)
+  await expect.poll(() => canvas.evaluate(element => element.toDataURL())).toBe(annotated)
+  await app.evaluate(async ({ clipboard, ClipboardItem }) => {
+    const items = await clipboard.read()
+    globalThis.pdfeTestClipboard = await Promise.all(items.map(async item => new ClipboardItem(
+      Object.fromEntries(await Promise.all(item.types.map(async type => [type, await item.getType(type)])))
+    )))
+  })
+  try {
+    await copy.click()
+    await expect(editor.getByRole('button', { name: '已复制', exact: true })).toBeVisible()
+    expect(await app.evaluate(async ({ clipboard, nativeImage }, data) => {
+      const item = (await clipboard.read()).find(entry => entry.types.includes('image/png'))
+      const png = await item?.getType('image/png')
+      return png instanceof Blob && nativeImage.createFromBuffer(Buffer.from(await png.arrayBuffer()))
+        .toBitmap().equals(nativeImage.createFromDataURL(data).toBitmap())
+    }, annotated)).toBe(true)
+    await product.screenshot({ path: testInfo.outputPath('pdfe-screenshot-mark.png'), animations: 'disabled' })
+    await controls.screenshot({ path: testInfo.outputPath('pdfe-screenshot-controls.png'), animations: 'disabled' })
+  } finally {
+    await app.evaluate(async ({ clipboard, nativeImage }, data) => {
+      const items = globalThis.pdfeTestClipboard
+      delete globalThis.pdfeTestClipboard
+      const item = (await clipboard.read()).find(entry => entry.types.includes('image/png'))
+      const png = await item?.getType('image/png')
+      if (!(png instanceof Blob) || !nativeImage.createFromBuffer(Buffer.from(await png.arrayBuffer()))
+        .toBitmap().equals(nativeImage.createFromDataURL(data).toBitmap())) return
+      if (items.length) await clipboard.write(items)
+      else clipboard.clear()
+    }, annotated)
+  }
+  await editor.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(editor).toHaveCount(0)
+  expect(await surface('controls')).toMatchObject({ windowId: originalControls.windowId, bounds: originalControls.bounds })
+})
+
+test('native API calls load automatically and follow the active Mock scene', async ({}, testInfo) => {
+  await Promise.all([
+    controls.waitForEvent('framenavigated', frame => frame === controls.mainFrame()),
+    controls.getByTestId('preview-scene-page-home-home-browse').click(),
+  ])
+  await expect(product.getByTestId('home-project-设计协作项目')).toBeVisible()
+  await openRequests()
+  const history = controls.getByTestId('preview-diagnostic-history')
+  const reads = history.getByRole('button').filter({ hasText: /GET.*\/api\/content\/projects/ })
+  await expect(reads.first()).toBeVisible()
+  await expect(history.getByRole('button').filter({ hasText: /GET.*\/api\/auth\/me/ }).first()).toBeVisible()
+  await expect(history.getByRole('button').filter({ hasText: /GET.*\/api\/serve\/attention/ }).first()).toBeVisible()
+  await expect(history.getByText('(unknown)', { exact: false })).toHaveCount(0)
+  const search = await controls.getByRole('searchbox', { name: zh.diagnosticSearch }).boundingBox()
+  const copy = await controls.getByRole('button', { name: zh.diagnosticCopyList }).boundingBox()
+  expect(search).not.toBeNull()
+  expect(copy).not.toBeNull()
+  expect(copy.x).toBeGreaterThanOrEqual(search.x + search.width)
+  expect(copy.y + copy.height / 2).toBeCloseTo(search.y + search.height / 2)
+  await controls.screenshot({ path: testInfo.outputPath('mock-api-list.png'), animations: 'disabled' })
+  const attentionDetail = await diagnosticDetails(/GET.*\/api\/serve\/attention/)
+  await expect(attentionDetail.locator('pre')).toContainText('"items": []')
+  await expect(attentionDetail.locator('pre')).toContainText('"by_session": {}')
+  await controls.screenshot({ path: testInfo.outputPath('mock-api-attention.png'), animations: 'disabled' })
+  await attentionDetail.getByRole('button', { name: zh.diagnosticBack, exact: true }).click()
+  const readDetail = await diagnosticDetails(/GET.*\/api\/content\/projects/)
+  await expect(readDetail).toContainText('200')
+  const projectJson = readDetail.locator('pre')
+  await expect(projectJson).toContainText('设计协作项目')
+  await expect(projectJson).toContainText('"workspaceRoot"')
+  await expect(readDetail.getByRole('heading', { name: zh.diagnosticParameters })).toHaveCount(0)
+  await expect(readDetail.getByRole('heading', { name: zh.diagnosticBody })).toHaveCount(0)
+  await controls.screenshot({ path: testInfo.outputPath('mock-api-project-response.png'), animations: 'disabled' })
+  await readDetail.getByRole('button', { name: zh.diagnosticBack, exact: true }).click()
+
+  const writes = history.getByRole('button').filter({ hasText: /POST.*\/api\/content\/projects/ })
+  await expect(writes).toHaveCount(0)
+  const name = '诊断验证项目'
+  await openHomeProjectForm()
+  await product.getByTestId('project-create-name').fill(name)
+  await product.getByTestId('project-create').click()
+  await expect(writes.first()).toBeVisible()
+  const detail = await diagnosticDetails(/POST.*\/api\/content\/projects/)
+  await expect(detail).toContainText('202')
+  await expect(detail.getByRole('heading', { name: zh.diagnosticParameters })).toHaveCount(0)
+  await expect(detail).toContainText(zh.diagnosticBody)
+  await expect(detail.locator('dd').filter({ hasText: new RegExp('^' + name.length + '$') })).toBeVisible()
+  await expect(detail).toContainText(zh.diagnosticResponse)
+  await expect(detail).toContainText('queued')
+  await expect(detail).toContainText(/operation-[a-f0-9]+/)
+  await expect(detail).not.toContainText(name)
+  const clipboardText = () => app.evaluate(({ clipboard }) => clipboard.readText())
+  const originalClipboard = await clipboardText()
+  try {
+    await detail.getByRole('button', { name: zh.diagnosticCopyDetail, exact: true }).click()
+    await expect.poll(clipboardText).toContain('"status": 202')
+    expect(await clipboardText()).not.toContain(name)
+    await detail.getByRole('button', { name: zh.diagnosticBack, exact: true }).click()
+    await controls.getByRole('searchbox', { name: zh.diagnosticSearch }).fill('api/content/projects')
+    await controls.getByRole('button', { name: zh.diagnosticCopyList, exact: true }).click()
+    await expect.poll(async () => {
+      const text = await clipboardText()
+      return text.startsWith('{') ? JSON.parse(text).records?.length ?? 0 : 0
+    }).toBeGreaterThan(1)
+    const copied = JSON.parse(await clipboardText()).records
+    expect(copied.every(record => JSON.stringify(record).includes('api/content/projects'))).toBe(true)
+    expect(copied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'GET', path: '/api/content/projects', response: {
+        state: 'available', json: expect.objectContaining({ projects: expect.any(Array), workspaceRoot: expect.any(String) }),
+      } }),
+    ]))
+    expect(copied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'POST', path: '/api/content/projects', status: 202 }),
+    ]))
+  } finally {
+    const current = await clipboardText()
+    if (current.includes('"scene": "home-browse"') && current.includes('"records"'))
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), originalClipboard)
+  }
+  await diagnosticDetails(/POST.*\/api\/content\/projects/)
+  await controls.screenshot({ path: testInfo.outputPath('mock-api-detail.png'), animations: 'disabled' })
+
+  await scenario('page-home', 'home-no-tasks')
+  await openRequests()
+  await expect(reads.first()).toBeVisible()
+  await expect(writes).toHaveCount(0)
+})
+
+test('native API calls and iteration versions omit shared controls without changing the active scene', async ({}, testInfo) => {
+  const shared = controls.getByRole('group', { name: zh.publicControls })
+  const scene = controls.getByTestId('preview-current-scene')
+  const settings = controls.getByTestId('preview-settings-toggle')
+  await expect(settings).toHaveAttribute('aria-expanded', 'false')
+  await expect(shared).toBeHidden()
+  await settings.click()
+  await expect(shared).toBeVisible()
+  const originalScene = await scene.innerText()
+  const location = product.url()
+  const navigation = controls.getByRole('tablist', { name: zh.workbenchSections })
+
+  await openRequests(zh, false)
+  await expect(navigation.getByRole('tab', { name: 'API调用', exact: true })).toBeVisible({ timeout: 2500 })
+  await expect(controls.getByRole('region', { name: 'API调用', exact: true })).toBeVisible()
+  await expect(controls.getByRole('heading', { name: 'API调用', exact: true })).toHaveCount(0)
+  await expect(shared).toHaveCount(0)
+  await expect(scene).toHaveText(originalScene)
+  await expect(controls.getByRole('searchbox', { name: zh.diagnosticSearch })).toBeVisible()
+  await controls.screenshot({ path: testInfo.outputPath('api-calls.png'), animations: 'disabled' })
+
+  await navigation.getByRole('tab', { name: '迭代版本', exact: true }).click()
+  await expect(controls.getByRole('heading', { name: '迭代版本', exact: true })).toBeVisible()
+  await expect(shared).toHaveCount(0)
+  await expect(controls.getByText('v0.4', { exact: true })).toBeVisible()
+  await expect(scene).toHaveText(originalScene)
+  expect(product.url()).toBe(location)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-versions.png'), animations: 'disabled' })
+
+  await navigation.getByRole('tab', { name: zh.featureSection, exact: true }).click()
+  await expect(shared.getByRole('combobox', { name: zh.theme, exact: true })).toBeVisible()
+  await shared.getByRole('combobox', { name: zh.theme, exact: true }).click()
+  await controls.getByRole('option', { name: zh.dark, exact: true }).click()
+  await expect(controls.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await shared.getByRole('combobox', { name: zh.language, exact: true }).click()
+  await controls.getByRole('option', { name: zh.english, exact: true }).click()
+  const englishNavigation = controls.getByRole('tablist', { name: en.workbenchSections })
+  await englishNavigation.getByRole('tab', { name: 'API Calls', exact: true }).click()
+  await expect(controls.getByRole('region', { name: 'API Calls', exact: true })).toBeVisible()
+  await englishNavigation.getByRole('tab', { name: 'Versions', exact: true }).click()
+  await expect(controls.getByRole('heading', { name: 'Versions', exact: true })).toBeVisible()
+  await expect(controls.getByRole('group', { name: en.publicControls })).toHaveCount(0)
+  await expect(controls.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await controls.screenshot({ path: testInfo.outputPath('iteration-versions-dark-en.png'), animations: 'disabled' })
+
+  const materials = englishNavigation.getByRole('tab', { name: en.componentsEntry, exact: true })
+  await materials.click()
+  await expect(materials).toHaveAttribute('aria-selected', 'true')
+  await expect(controls.getByRole('group', { name: en.publicControls })).toBeVisible()
+})
+
+test('native scene navigation reveals the selected row after reload', async ({}, testInfo) => {
+  const pageId = 'page-schedules'
+  const sceneId = 'schedules-materials'
+  await scenario(pageId, sceneId)
+  const navigation = controls.getByRole('navigation', { name: zh.navigation })
+  const selected = navigation.getByTestId('preview-scene-' + pageId + '-' + sceneId)
+  await expect(selected).toHaveAttribute('aria-current', 'page')
+  await expect(selected).toBeInViewport()
+  await controls.screenshot({ path: testInfo.outputPath('active-scene-revealed.png'), animations: 'disabled' })
+})
+
+test('native filtered navigation can collapse and reopen branches with the mouse', async ({}, testInfo) => {
+  const filter = controls.getByRole('region', { name: zh.iterationFilter })
+  const iteration = filter.getByLabel(zh.iteration, { exact: true })
+  const search = controls.getByRole('searchbox', { name: zh.discovery, exact: true })
+  const group = controls.getByTestId('preview-group-center')
+  const daily = controls.getByTestId('preview-section-page-home-areaDaily')
+  const boundaries = controls.getByTestId('preview-section-page-home-areaBoundaries')
+  const projects = controls.getByTestId('preview-family-page-home-homeProjectBoundaryGroup')
+  const tasks = controls.getByTestId('preview-family-page-home-homeTaskBoundaryGroup')
+  const location = product.url()
+  await expect(daily).toHaveAttribute('aria-expanded', 'true')
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'false')
+  await iteration.click()
+  await controls.getByRole('option', { name: 'v0.3 · ' + zh.iterationReleased }).click()
+  await expect(projects).toHaveAttribute('aria-expanded', 'true')
+  await projects.click()
+  await expect(projects).toHaveAttribute('aria-expanded', 'false', { timeout: 2500 })
+  await expect(tasks).toHaveAttribute('aria-expanded', 'true')
+  await controls.screenshot({ path: testInfo.outputPath('filtered-navigation-collapsed.png'), animations: 'disabled' })
+  await projects.click()
+  await expect(projects).toHaveAttribute('aria-expanded', 'true')
+  await boundaries.click()
+  await expect(projects).toBeHidden()
+  await boundaries.click()
+  await expect(projects).toHaveAttribute('aria-expanded', 'true')
+  await group.click()
+  await expect(boundaries).toBeHidden()
+  await group.click()
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'true')
+  await search.fill('home-projects-')
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'true')
+  await boundaries.click()
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'false')
+  await boundaries.click()
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'true')
+  await boundaries.click()
+  await search.clear()
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'true')
+  await iteration.click()
+  await controls.getByRole('option', { name: zh.iterationAll, exact: true }).click()
+  await expect(daily).toHaveAttribute('aria-expanded', 'true')
+  await expect(boundaries).toHaveAttribute('aria-expanded', 'false')
+  expect(product.url()).toBe(location)
+})
+
+test('native iteration filter distinguishes the released baseline from the prototype scope', async ({}, testInfo) => {
+  expect(await product.evaluate(() => typeof window.pdfe.readIterations)).toBe('undefined')
+  expect(await controls.evaluate(() => typeof window.pdfe.saveIteration)).toBe('undefined')
+  expect(await controls.evaluate(() => window.pdfe.readIterations())).toMatchObject({
+    revision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    manifest: { current: '0.4', baseline: { version: '0.3' } },
+  })
+  const filter = controls.getByRole('region', { name: zh.iterationFilter })
+  const iteration = filter.getByLabel(zh.iteration, { exact: true })
+  const scope = filter.getByLabel(zh.iterationScope, { exact: true })
+  const released = 'v0.3 · ' + zh.iterationReleased
+  const prototype = 'v0.4 · ' + zh.iterationPrototype
+  const feature = controls.getByTestId('preview-version-page-home-home-browse')
+
+  await expect(filter.getByText(zh.iterationCurrent + ': ' + prototype)).toBeVisible()
+  await expect(scope).toBeDisabled()
+  await iteration.press('Enter')
+  await expect(controls.getByRole('option', { name: prototype })).toBeVisible()
+  await controls.getByRole('option', { name: released }).click()
+  await scope.click()
+  await controls.getByRole('option', { name: zh.iterationAdded }).click()
+  await expect(feature).toHaveText('v0.3 新增')
+  await controls.screenshot({ path: testInfo.outputPath('iteration-released.png'), animations: 'disabled' })
+
+  await scope.click()
+  await controls.getByRole('option', { name: zh.iterationUpdated }).click()
+  await expect(controls.getByText(zh.iterationEmpty)).toBeVisible()
+  await iteration.click()
+  await controls.getByRole('option', { name: prototype }).click()
+  await expect(scope).toHaveText(zh.iterationAny)
+  await expect(iteration).toHaveText(prototype)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-prototype.png'), animations: 'disabled' })
+
+  await controls.getByTestId('preview-settings-toggle').click()
+  await controls.getByRole('combobox', { name: zh.theme, exact: true }).click()
+  await controls.getByRole('option', { name: zh.dark, exact: true }).click()
+  await expect(controls.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
+  await controls.getByRole('option', { name: zh.english, exact: true }).click()
+  const native = await app.browserWindow(product)
+  await native.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
+  const englishFilter = controls.getByRole('region', { name: en.iterationFilter })
+  await expect(englishFilter.getByText(en.iterationCurrent + ': v0.4 · ' + en.iterationPrototype)).toBeVisible()
+  const englishIteration = englishFilter.getByLabel(en.iteration, { exact: true })
+  await englishIteration.press('Enter')
+  await expect(controls.getByRole('option', { name: 'v0.3 · ' + en.iterationReleased })).toBeVisible()
+  await controls.keyboard.press('Escape')
+  await expect(controls.getByRole('listbox')).toHaveCount(0)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-dark-english-minimum.png'), animations: 'disabled' })
+})
+
+test('native iteration editing persists safely and retains drafts on conflict or write denial', { annotation: { type: EDIT_ITERATION_ANNOTATION } }, async ({}, testInfo) => {
+  test.skip(process.platform !== 'darwin', 'Iteration write capability is macOS only')
+  const tab = () => controls.getByRole('tab', { name: zh.iterationMaintenance, exact: true }).click()
+  const entry = version => controls.getByTestId('preview-iteration-entry-' + version)
+  const modal = title => controls.getByRole('dialog', { name: title, exact: true })
+  const button = (label, root = controls) => root.getByRole('button', { name: label, exact: true })
+  const description = editor => editor.getByLabel(zh.iterationDescription, { exact: true })
+  const snapshot = () => controls.evaluate(() => window.pdfe.readIterations())
+  const read = () => JSON.parse(readFileSync(iterationFixture, 'utf8'))
+  const direct = async edit => controls.evaluate(async edit => window.pdfe.saveIteration((await window.pdfe.readIterations()).revision, edit), edit)
+  const add = async (version, details) => {
+    await button(zh.iterationCreate).click()
+    const editor = modal(zh.iterationCreate)
+    await editor.getByLabel(zh.iterationVersion, { exact: true }).fill(version)
+    await description(editor).fill(details)
+    return editor
+  }
+  await tab()
+  expect(await product.evaluate(() => typeof window.pdfe.saveIteration)).toBe('undefined')
+  expect(await direct({ kind: 'delete', version: '0.3' })).toEqual({ status: 'invalid', code: 'baseline' })
+  expect(await direct({ kind: 'edit', version: '0.3', path: '../outside' })).toEqual({ status: 'invalid', code: 'invalid-edit' })
+  const originalGeneration = (await controls.evaluate(() => window.pdfe.readDiagnostics())).generation
+  const created = await add('0.5', '新版本描述')
+  await button(zh.iterationCancel, created).click()
+  const discard = controls.getByRole('alertdialog', { name: zh.iterationDiscardTitle })
+  await expect(discard).toBeVisible()
+  await button(zh.iterationKeep, discard).click()
+  await expect(description(created)).toHaveValue('新版本描述')
+  await button(zh.iterationSave, created).click()
+  await expect(entry('0.5')).toContainText('新版本描述')
+  expect(read().iterations.some(item => item.version === '0.5')).toBe(true)
+  await button(zh.iterationSelect, entry('0.5')).click()
+  await button(zh.iterationSave, modal(zh.iterationSelect)).click()
+  await expect(entry('0.5')).toContainText(zh.iterationCurrent)
+  await controls.getByRole('tab', { name: zh.featureSection, exact: true }).click()
+  await expect(controls.getByRole('region', { name: zh.iterationFilter })).toContainText(zh.iterationCurrent + ': v0.5')
+  await tab()
+  await button(zh.iterationEdit, entry('0.5')).click()
+  const editor = modal(zh.iterationEdit)
+  await description(editor).fill('冲突后保留的草稿')
+  const external = read()
+  external.note = 'external field remains'
+  external.features['project-browse'] = { introducedIn: '0.4', changes: [] }
+  external.iterations.find(item => item.version === '0.5').description = '外部更新了同一描述'
+  writeFileSync(iterationFixture, JSON.stringify(external))
+  await button(zh.iterationSave, editor).click()
+  await expect(editor.getByRole('alert')).toHaveText(zh.iterationConflict)
+  await expect(description(editor)).toHaveValue('冲突后保留的草稿')
+  await expect(button(zh.iterationSave, editor)).toBeDisabled()
+  await controls.screenshot({ path: testInfo.outputPath('iteration-edit-conflict.png'), animations: 'disabled' })
+  await button(zh.iterationReloadDraft, editor).click()
+  await expect(editor.getByText('外部更新了同一描述', { exact: true })).toBeVisible({ timeout: 2500 })
+  await expect(button(zh.iterationSave, editor)).toBeDisabled()
+  await controls.screenshot({ path: testInfo.outputPath('iteration-description-conflict.png'), animations: 'disabled' })
+  await button('保留我的描述', editor).click()
+  await button(zh.iterationSave, editor).click()
+  await expect(entry('0.5')).toContainText('冲突后保留的草稿')
+  expect(read().note).toBe(external.note)
+  await expect(button(zh.iterationDelete, entry('0.4'))).toBeDisabled()
+  await expect(entry('0.4')).toContainText(zh.iterationCannotDeleteReferenced)
+  await button(zh.iterationEdit, entry('0.5')).click()
+  await description(editor).fill('权限失败不应写入')
+  chmodSync(iterationFixture, 0o444)
+  try {
+    await button(zh.iterationSave, editor).click()
+    await expect(editor.getByRole('alert')).toHaveText(zh.iterationSaveUnavailable)
+    await expect(description(editor)).toHaveValue('权限失败不应写入')
+    expect(read().iterations.find(item => item.version === '0.5').description).toBe('冲突后保留的草稿')
+  } finally { chmodSync(iterationFixture, 0o644) }
+  await description(editor).fill('冲突后保留的草稿')
+  await editor.getByRole('checkbox', { name: zh.iterationRelease, exact: true }).check()
+  await expect(button(zh.iterationSave, editor)).toBeDisabled()
+  const newer = read()
+  newer.iterations.find(item => item.version === '0.5').description = '发布标记保留'
+  writeFileSync(iterationFixture, JSON.stringify(newer))
+  await editor.getByRole('checkbox', { name: zh.iterationReleaseConfirm, exact: true }).check()
+  await button(zh.iterationSave, editor).click()
+  await expect(editor.getByRole('alert')).toHaveText(zh.iterationConflict)
+  await button(zh.iterationReloadDraft, editor).click()
+  await expect(description(editor)).toHaveValue('发布标记保留')
+  await editor.getByRole('checkbox', { name: zh.iterationReleaseConfirm, exact: true }).check()
+  await button(zh.iterationSave, editor).click()
+  await expect(entry('0.5')).toContainText(zh.iterationReleased)
+  expect(read().iterations.find(item => item.version === '0.5').description).toBe('发布标记保留')
+  expect(await direct({ kind: 'edit', version: '0.5', status: 'prototype' })).toEqual({ status: 'invalid', code: 'downgrade' })
+  const transient = await add('0.6', '可删除')
+  await button(zh.iterationSave, transient).click()
+  await button(zh.iterationDelete, entry('0.6')).click()
+  await button(zh.iterationDelete, modal(zh.iterationDelete)).click()
+  await expect(entry('0.6')).toHaveCount(0)
+  expect(read().iterations.some(item => item.version === '0.6')).toBe(false)
+  const before = await snapshot()
+  expect((await controls.evaluate(() => window.pdfe.readDiagnostics())).generation).toBe(originalGeneration)
+  await app.close()
+  app = await _electron.launch({ executablePath: require('electron'), args: [application], env: launchEnvironment, timeout: 60_000 })
+  await expect.poll(() => app.windows().filter(page => page.url().includes('pdfe=')).length).toBe(2)
+  controls = app.windows().find(page => new URL(page.url()).searchParams.get('pdfe') === 'controls')
+  product = app.windows().find(page => new URL(page.url()).searchParams.get('pdfe') === 'product')
+  await tab()
+  expect((await snapshot()).revision).toBe(before.revision)
+  await expect(entry('0.5')).toContainText('发布标记保留')
+  await expect(entry('0.5')).toContainText(zh.iterationCurrent)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-edit-restarted.png'), animations: 'disabled' })
+})
+
+test('native scene copy identifies exact aliases without launching a scene', async ({}, testInfo) => {
+  const active = controls.getByTestId('preview-copy-scene-page-home-home-browse')
+  await expect(active).toBeVisible({ timeout: 2500 })
+  await expect(controls.getByRole('button', { name: '生成 AI 任务', exact: true })).toHaveCount(0)
+  const rowBounds = await controls.getByTestId('preview-scene-page-home-home-browse').boundingBox()
+  const copyBounds = await active.boundingBox()
+  const play = controls.getByTestId('preview-play-scene-page-home-home-browse')
+  const playBounds = await play.boundingBox()
+  expect(copyBounds.x + copyBounds.width / 2).toBeCloseTo(playBounds.x + playBounds.width / 2)
+  expect(copyBounds.y).toBeGreaterThanOrEqual(playBounds.y + playBounds.height)
+  expect(await play.evaluate((icon) => {
+    const bounds = icon.getBoundingClientRect()
+    return document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+      ?.closest('button')?.getAttribute('data-testid')
+  })).toBe('preview-scene-page-home-home-browse')
+  expect(copyBounds.x).toBeGreaterThanOrEqual(rowBounds.x)
+  expect(copyBounds.y).toBeGreaterThanOrEqual(rowBounds.y)
+  expect(copyBounds.x + copyBounds.width).toBeLessThanOrEqual(rowBounds.x + rowBounds.width)
+  expect(copyBounds.y + copyBounds.height).toBeLessThanOrEqual(rowBounds.y + rowBounds.height)
+  await expect(active).toHaveAccessibleName(zh.sceneCopy)
+  await active.hover()
+  await expect(controls.getByRole('tooltip').filter({ hasText: zh.sceneCopy })).toBeVisible()
+  await controls.screenshot({ path: testInfo.outputPath('scene-reference-hover.png'), animations: 'disabled' })
+  expect(await product.evaluate(() => typeof window.pdfe.copyScene)).toBe('undefined')
+  const location = product.url()
+  const generation = (await controls.evaluate(() => window.pdfe.readDiagnostics())).generation
+  await app.evaluate(async ({ clipboard, ClipboardItem }) => {
+    const items = await clipboard.read()
+    globalThis.pdfeTestClipboard = await Promise.all(items.map(async item => new ClipboardItem(
+      Object.fromEntries(await Promise.all(item.types.map(async type => [type, await item.getType(type)])))
+    )))
+  })
+  const read = () => app.evaluate(({ clipboard }) => clipboard.readText())
+  const copiedTexts = []
+  const copy = async (button, sceneId) => {
+    await button.click()
+    await expect(button).toHaveAttribute('data-copy-status', 'success', { timeout: 2500 })
+    await expect(button).toHaveAccessibleName(zh.sceneCopied)
+    const text = await read()
+    copiedTexts.push(text)
+    expect(text.split('\n').slice(-2)).toEqual(['PDFE-SCENE/1', JSON.stringify({ pageId: 'page-home', sceneId })])
+    expect(product.url()).toBe(location)
+    expect((await controls.evaluate(() => window.pdfe.readDiagnostics())).generation).toBe(generation)
+    return text
+  }
+  try {
+    await copy(active, 'home-browse')
+    const search = controls.getByRole('searchbox', { name: zh.discovery, exact: true })
+    await search.fill('home-states')
+    const homeText = await copy(controls.getByTestId('preview-copy-scene-page-home-home-states'), 'home-states')
+    expect(homeText.split('\n')).toEqual([
+      'PDFE 场景：项目中心 → 少量项目与任务 · 1 个项目 / 1 个任务',
+      'PDFE-SCENE/1',
+      '{"pageId":"page-home","sceneId":"home-states"}',
+    ])
+    writeFileSync(testInfo.outputPath('scene-reference.txt'), homeText)
+    await controls.screenshot({ path: testInfo.outputPath('scene-reference-copied.png'), animations: 'disabled' })
+    await search.fill('home-open-project')
+    const alias = controls.getByTestId('preview-copy-scene-page-home-home-open-project')
+    const aliasText = await copy(alias, 'home-open-project')
+    await expect(controls.evaluate(() => window.pdfe.copyScene({ pageId: 'page-home', sceneId: 'not-in-catalog' }))).rejects.toThrow('Unknown PDFE target')
+    await expect(controls.evaluate(() => window.pdfe.copyScene({ pageId: 'page-home', sceneId: 'home-browse', text: 'not a scene reference' }))).rejects.toThrow('Invalid PDFE target')
+    expect(await read()).toBe(aliasText)
+    await controls.getByTestId('preview-hint-page-home-home-open-project').click()
+    await expect(product).toHaveURL(url => url.searchParams.get(PREVIEW_SCENE_PARAMETER) === 'home-open-project')
+    await scenario('page-home', 'home-states')
+    await expect(product.getByTestId('home-project-设计协作项目')).toBeVisible()
+    await expect(product.getByText('设计协作演示', { exact: true })).toBeVisible()
+  } finally {
+    await app.evaluate(async ({ clipboard }, texts) => {
+      const before = globalThis.pdfeTestClipboard
+      delete globalThis.pdfeTestClipboard
+      const current = await clipboard.readText()
+      if (!texts.includes(current)) return
+      if (before.length) await clipboard.write(before)
+      else clipboard.clear()
+    }, copiedTexts)
+  }
+})
+
+test('native iteration maintenance shares a single reloadable snapshot without resetting the scene', { annotation: { type: MISSING_ITERATION_ANNOTATION } }, async ({}, testInfo) => {
+  const currentUrl = product.url()
+  const initial = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  const openMaintenance = () => controls.getByRole('tab', { name: zh.iterationMaintenance, exact: true }).click()
+  const openFeatures = () => controls.getByRole('tab', { name: zh.featureSection, exact: true }).click()
+  const reload = () => controls.getByRole('button', { name: zh.iterationReload, exact: true }).click()
+  const filter = controls.getByRole('region', { name: zh.iterationFilter })
+  const badge = controls.getByTestId('preview-version-page-home-home-browse')
+  const featured = controls.getByTestId('preview-scene-page-home-home-browse')
+  await expect(featured).toBeVisible()
+  await expect(filter).toHaveCount(0)
+  await expect(badge).toHaveCount(0)
+  await openMaintenance()
+  await expect(controls.getByRole('alert')).toHaveText(zh.iterationUnavailable)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-first-unavailable.png'), animations: 'disabled' })
+
+  const checkedIn = JSON.parse(readFileSync(resolve(desktop, '../..', PDFE_ITERATION_FILENAME), 'utf8'))
+  const write = document => writeFileSync(iterationFixture, JSON.stringify(document), 'utf8')
+  write(checkedIn)
+  await reload()
+  await expect(controls.getByTestId('preview-iteration-entry-0.3')).toContainText(zh.iterationBaseline)
+  await expect(controls.getByTestId('preview-iteration-entry-0.4')).toContainText(zh.iterationCurrent)
+  await openFeatures()
+  await expect(badge).toContainText('v0.3')
+  const select = filter.getByLabel(zh.iteration, { exact: true })
+  await select.press('Enter')
+  await controls.getByRole('option', { name: 'v0.4 · ' + zh.iterationPrototype }).click()
+  await expect(featured).toHaveCount(0)
+
+  const changed = structuredClone(checkedIn)
+  changed.current = '0.5'
+  changed.iterations.push({ version: '0.5', status: 'prototype', description: '来自当前文件的版本描述' })
+  changed.features['project-browse'] = { introducedIn: '0.4', changes: [{ version: '0.5', summary: '更新项目浏览' }] }
+  write(changed)
+  await openMaintenance()
+  await reload()
+  const next = controls.getByTestId('preview-iteration-entry-0.5')
+  await expect(next).toContainText('来自当前文件的版本描述')
+  await expect(next).toContainText(zh.iterationCurrent)
+  await controls.screenshot({ path: testInfo.outputPath('iteration-maintenance-ready.png'), animations: 'disabled' })
+  await openFeatures()
+  await expect(select).toContainText('v0.4')
+  await expect(filter).toContainText(zh.iterationCurrent + ': v0.5')
+  await expect(badge).toHaveText('v0.4 新增')
+  await expect(controls.getByTestId('preview-version-page-home-home-browse-updated-0.5')).toHaveText('v0.5 变更')
+  await controls.screenshot({ path: testInfo.outputPath('iteration-synchronized-filter.png'), animations: 'disabled' })
+
+  writeFileSync(iterationFixture, '{broken', 'utf8')
+  await openMaintenance()
+  await reload()
+  await expect(controls.getByRole('alert')).toHaveText(zh.iterationStale)
+  await expect(next).toContainText('来自当前文件的版本描述')
+  await controls.screenshot({ path: testInfo.outputPath('iteration-stale.png'), animations: 'disabled' })
+  await openFeatures()
+  await expect(select).toContainText('v0.4')
+  await expect(badge).toContainText('v0.4')
+
+  changed.iterations = changed.iterations.filter(entry => entry.version !== '0.4')
+  changed.features['project-browse'] = { introducedIn: '0.5', changes: [] }
+  for (const feature of Object.values(changed.features)) {
+    if (feature.introducedIn === '0.4') feature.introducedIn = '0.5'
+  }
+  write(changed)
+  await openMaintenance()
+  await reload()
+  await expect(controls.getByRole('alert')).toHaveCount(0)
+  await expect(controls.getByTestId('preview-iteration-entry-0.4')).toHaveCount(0)
+  await openFeatures()
+  await expect(select).toHaveText(zh.iterationAll)
+  await expect(badge).toContainText('v0.5')
+  expect(product.url()).toBe(currentUrl)
+  expect((await controls.evaluate(() => window.pdfe.readDiagnostics())).generation).toBe(initial.generation)
+})
 
 test('native failure evidence captures rendered surfaces without showing hidden controls', async ({}, testInfo) => {
   await product.getByTestId('home-project-设计协作项目').focus()
@@ -243,7 +1010,7 @@ test('native failure evidence captures rendered surfaces without showing hidden 
   expect(failure.surfaces.map(surface => ({ role: surface.role, status: surface.status }))).toEqual([{ role: 'product', status: 'failed' }, { role: 'controls', status: 'captured' }])
   expect(failure.surfaces[0].error).toBe(injected)
   expect(readFileSync(testInfo.outputPath('failed-controls.png')).subarray(0, PNG_SIGNATURE.length)).toEqual(PNG_SIGNATURE)
-  await controls.getByRole('button', { name: zh.close, exact: true }).click()
+  await workspaceShortcut('F8')
   await expect.poll(async () => (await nativeEvidenceSurfaces()).find(surface => surface.role === 'controls')?.viewVisible).toBe(false)
   expect(await captureNativeFailure(testInfo, 'hidden')).toEqual(['product'])
   expect(readFileSync(testInfo.outputPath('hidden-product.png')).subarray(0, PNG_SIGNATURE.length)).toEqual(PNG_SIGNATURE)
@@ -746,7 +1513,7 @@ test('native translation configuration saves prompts, validates demo credentials
   await expect(product.getByTestId('translation-service-deepl')).toContainText('已配置')
   await product.getByRole('button', { name: '恢复默认', exact: true }).click()
   await expect(product.getByRole('textbox', { name: 'AI 翻译提示词', exact: true })).toHaveValue('准确翻译所选内容，保留专业术语、引用、数字和段落格式。')
-  await controls.getByRole('button', { name: '重置模拟数据', exact: true }).click()
+  await replayCurrentScenario()
   await expect(product.getByTestId('translation-service-deepl')).toContainText('未配置')
   await expect(product.getByRole('switch', { name: 'PDF 划词即翻译', exact: true })).not.toBeChecked()
 })
@@ -965,6 +1732,60 @@ async function workspaceShortcut(keyCode, modifiers = []) {
   }, { keyCode, modifiers })
 }
 
+test('native task starter templates allow empty topics and preserve the framework', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await product.getByTestId('home-project-设计协作项目').click()
+    await product.getByTestId('project-new-task').click()
+    const field = product.getByTestId('composer-template-field')
+    const send = product.getByTestId('composer-send')
+    for (const taskType of ['precise_search', 'literature_review', 'research_idea']) {
+      await product.getByTestId(`ai-task-starter-${taskType}`).click()
+      await expect(field).toBeVisible()
+      await expect(field).toBeFocused()
+      await expect(field).toHaveValue('')
+      await expect(send).toBeEnabled()
+      await field.fill('   ')
+      await expect(send).toBeEnabled()
+      await expect(product.getByTestId('composer-template')).toBeVisible()
+      await field.fill('土壤碳循环与长期干旱')
+      await expect(send).toBeEnabled()
+      if (taskType === 'literature_review') {
+        await product.screenshot({ path: testInfo.outputPath('review-template-filled.png') })
+      }
+      await expect(product.getByRole('button', { name: '编辑全文', exact: true })).toHaveCount(0)
+      await expect(product.getByRole('button', { name: '清除模板', exact: true })).toHaveCount(0)
+      await expect(product.getByText('请先补充研究问题或方向，再发送。', { exact: true })).toHaveCount(0)
+      await expect(product.getByTestId('composer-template')).toContainText(/引用|文献|实验/)
+    }
+    await product.getByTestId('ai-task-starter-literature_review').click()
+    await expect(field).toHaveValue('')
+    await product.screenshot({ path: testInfo.outputPath('review-template-empty.png') })
+    const native = await app.browserWindow(product)
+    await native.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
+    await expect(field).toBeFocused()
+    await product.screenshot({ path: testInfo.outputPath('review-template-narrow.png') })
+    const [receipt] = await Promise.all([
+      product.waitForResponse(response => /\/sessions\/[^/]+\/turns$/.test(new URL(response.url()).pathname) && response.request().method() === 'POST'),
+      field.press('Enter'),
+    ])
+    expect(receipt.ok()).toBe(true)
+    const message = product.getByTestId('user-message-text').filter({ hasText: '帮我调研这个方向' })
+    await expect(message).toContainText('附完整的引用文献清单')
+    await expect(message).not.toContainText('小样本下的材料性质预测')
+    await expect(message).not.toContainText('[[topic]]')
+    await product.screenshot({ path: testInfo.outputPath('empty-template-sent.png') })
+    await expect(product.getByTestId('composer-template')).toHaveCount(0)
+  })
+})
+
+async function replayCurrentScenario() {
+  const target = new URL(product.url()).searchParams
+  const features = controls.getByRole('tab', { name: zh.featureSection, exact: true })
+  if (await features.getAttribute('aria-selected') !== 'true') await features.click()
+  await controls.getByRole('searchbox').fill(target.get('scene'))
+  await controls.getByTestId('preview-scene-' + target.get('page') + '-' + target.get('scene')).click()
+}
+
 async function scenario(pageId, sceneId, dictionary = zh) {
   const entry = PREVIEW_CATALOG.find(page => page.id === pageId)
   expect(entry?.scenarios.some(scene => scene.id === sceneId)).toBe(true)
@@ -988,6 +1809,562 @@ async function scenario(pageId, sceneId, dictionary = zh) {
   ])
   await expect(controls).toHaveURL(url => url.searchParams.get('page') === pageId && url.searchParams.get('scene') === sceneId)
 }
+
+test('native PDFE project and conversation search shortcuts use isolated samples', async ({}, testInfo) => {
+  await scenario('page-resource', 'project-search-shortcuts')
+  await expect(product.getByTestId('project-navigation')).toBeVisible()
+  const primary = process.platform === 'darwin' ? 'Meta' : 'Control'
+  await product.keyboard.press(primary + '+k')
+  const search = product.getByTestId('global-search')
+  const input = search.getByTestId('global-search-input')
+  await expect(input).toBeFocused()
+  await input.fill('hello.py')
+  await expect(search.locator('[data-testid^="search-hit-resource-"]').filter({ hasText: 'hello.py' })).toBeVisible()
+  await input.fill('可复现研究流程')
+  await expect(search.locator('[data-testid^="search-hit-literature-"]').filter({ hasText: '可复现研究流程' })).toBeVisible()
+  await input.fill('检索样本')
+  const hit = search.locator('[data-testid^="search-hit-session-"]')
+  await expect(hit).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('project-search.png'), animations: 'disabled' })
+  await hit.click()
+  const answer = product.getByText('这是第二处检索样本。搜索只使用当前 PDFE 实例中的模拟数据。', { exact: true })
+  await expect(answer).toBeVisible()
+  await answer.click()
+  await product.keyboard.press(primary + '+f')
+  const find = product.getByTestId('conversation-find')
+  const query = find.getByRole('searchbox')
+  await expect(query).toBeFocused()
+  await query.fill('检索样本')
+  await expect(find.getByRole('status')).toHaveText('1 / 2')
+  await query.press('Enter')
+  await expect(find.getByRole('status')).toHaveText('2 / 2')
+  await product.screenshot({ path: testInfo.outputPath('conversation-find.png'), animations: 'disabled' })
+  await query.fill('no-match-in-preview')
+  await expect(find.getByRole('status')).toHaveText('无匹配')
+  await query.press('Escape')
+  await expect(find).toHaveCount(0)
+})
+
+test('native PDFE schedules use the shared task editor and isolated run history', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-empty')
+  const page = product.getByTestId('schedules-page')
+  await expect(page.getByText('暂无定时任务', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建定时任务', exact: true }).click()
+  const editor = product.getByTestId('schedule-editor')
+  await editor.getByLabel('任务名称', { exact: true }).fill('PDFE 原型计划')
+  await editor.getByLabel('任务内容', { exact: true }).fill('仅用于模拟预览')
+  await editor.getByRole('button', { name: '创建任务', exact: true }).click()
+  const card = page.getByTestId('schedule-card').filter({ hasText: 'PDFE 原型计划' })
+  await expect(card).toBeVisible()
+  await card.hover()
+  await card.getByRole('button', { name: '编辑任务', exact: true }).click()
+  await editor.getByLabel('任务内容', { exact: true }).fill('编辑后的模拟内容')
+  await editor.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(card.getByText('编辑后的模拟内容')).toBeVisible()
+  await card.getByRole('switch', { name: '暂停PDFE 原型计划' }).click()
+  await expect(card.getByText('已暂停', { exact: true })).toBeVisible()
+  await card.hover()
+  await card.getByRole('button', { name: '立即执行', exact: true }).click()
+  await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+  await expect(product.getByTestId('schedule-run-selector')).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('pdfe-schedule-run.png'), animations: 'disabled' })
+})
+
+for (const [sceneId, expectedTotal] of [
+  ['schedules-new-project', 3],
+  ['schedules-conversations', 9],
+  ['schedules-materials', 9],
+]) {
+  test(`native PDFE schedule recommendations ${sceneId} preserve templates and cap totals`, async ({}, testInfo) => {
+    await scenario('page-schedules', sceneId)
+    const cards = product.getByTestId('schedule-recommendation')
+    await expect(cards.first()).toBeVisible()
+    const identities = []
+    const next = product.getByRole('button', { name: '下一组推荐', exact: true })
+    for (let pageIndex = 0; pageIndex < expectedTotal; pageIndex += 1) {
+      identities.push(...await cards.evaluateAll(elements => elements.map(element => element.getAttribute('data-recommendation-id'))))
+      await product.screenshot({ path: testInfo.outputPath(`recommendations-${pageIndex + 1}.png`), animations: 'disabled' })
+      if (!(await next.count()) || await next.isDisabled()) break
+      const previous = await cards.first().getAttribute('data-recommendation-id')
+      await next.click()
+      await expect(cards.first()).not.toHaveAttribute('data-recommendation-id', previous)
+    }
+    expect(identities).toHaveLength(expectedTotal)
+    expect(new Set(identities).size).toBe(expectedTotal)
+    expect(identities.slice(-3)).toEqual(['papers', 'report', 'files'])
+    if (await next.count()) await expect(next).toBeDisabled()
+    await cards.last().getByRole('button').click()
+    const editor = product.getByTestId('schedule-editor')
+    await expect(editor.getByLabel('任务名称', { exact: true })).toHaveValue('资料整理')
+    await editor.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(product.getByTestId('schedule-card')).toHaveCount(0)
+  })
+}
+
+test('native PDFE fixed schedule examples prefill detailed bilingual instructions', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-new-project')
+  for (const [language, dictionary] of [['zh', schedulesZh], ['en', schedulesEn]]) {
+    if (language === 'en') {
+      await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
+      await controls.getByRole('option', { name: 'English', exact: true }).click()
+    }
+    const cards = product.getByTestId('schedule-recommendation')
+    await expect(cards).toHaveCount(3)
+    await expect(cards.first()).toContainText(dictionary.examples.papers.description)
+    await product.screenshot({ path: testInfo.outputPath(`fixed-examples-${language}.png`), animations: 'disabled' })
+    for (const key of ['papers', 'report', 'files']) {
+      const example = dictionary.examples[key]
+      await cards.filter({ hasText: example.name }).getByRole('button').click()
+      const editor = product.getByTestId('schedule-editor')
+      await expect(editor.getByTestId('schedule-composer-input')).toHaveValue(example.prompt)
+      await expect(editor.getByTestId('schedule-references')).toHaveCount(0)
+      const composerBounds = await editor.getByTestId('schedule-composer').boundingBox()
+      const promptBounds = await editor.getByTestId('schedule-composer-input').boundingBox()
+      expect(promptBounds.y - composerBounds.y).toBeLessThanOrEqual(20)
+      await product.screenshot({ path: testInfo.outputPath(`example-${key}-${language}.png`), animations: 'disabled' })
+      await editor.getByRole('button', { name: dictionary.cancel, exact: true }).click()
+      await expect(product.getByTestId('schedule-card')).toHaveCount(0)
+    }
+  }
+})
+
+test('native PDFE schedule composer shares selection menus and keeps saved references', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-empty')
+  await product.getByRole('button', { name: '新建定时任务', exact: true }).click()
+  const editor = product.getByTestId('schedule-editor')
+  const input = editor.getByTestId('schedule-composer-input')
+  await expect(input).toHaveAttribute('placeholder', '描述希望书深定期完成的事情…')
+  await expect(input).toHaveCSS('min-height', '160px')
+  await product.screenshot({ path: testInfo.outputPath('schedule-composer-guidance.png'), animations: 'disabled' })
+  await editor.getByLabel('任务名称', { exact: true }).fill('共享输入框回归')
+  await expect(editor.getByTestId('mode-chip')).toHaveCount(0)
+  await expect(editor.getByText('所属项目', { exact: true })).toHaveCount(0)
+  await input.fill('/')
+  await expect(product.getByTestId('composer-skill-preview-notes')).toBeVisible()
+  const search = product.getByRole('searchbox', { name: componentsZh.composer.searchSkillsLabel })
+  await search.fill('no-matching-skill')
+  await expect(product.getByText(componentsZh.composer.emptySkills, { exact: true })).toBeVisible()
+  await product.getByRole('button', { name: componentsZh.composer.clearSearch }).click()
+  await search.fill('preview-notes')
+  await search.press('Enter')
+  await expect(input).toHaveValue('')
+  await expect(input).toBeFocused()
+  await expect(editor.getByText('preview-notes', { exact: true })).toHaveCount(1)
+  await editor.getByTestId('schedule-plus').click()
+  await product.getByTestId('composer-skills-menu').hover()
+  await product.getByTestId('composer-skill-preview-notes').click()
+  await expect(editor.getByText('preview-notes', { exact: true })).toHaveCount(1)
+  await input.fill('@')
+  await expect(product.getByTestId('composer-add-file')).toBeVisible()
+  await product.getByRole('menuitem', { name: '引用资料库', exact: true }).click()
+  await product.getByRole('checkbox', { name: '选择 sample.pdf', exact: true }).check()
+  await product.getByRole('button', { name: '确定', exact: true }).click()
+  await input.fill('仅保存输入、技能与文件引用，不执行模型。')
+  await editor.getByRole('button', { name: '创建任务', exact: true }).click()
+  const card = product.getByTestId('schedule-card').filter({ hasText: '共享输入框回归' })
+  await card.hover()
+  await card.getByRole('button', { name: '编辑任务', exact: true }).click()
+  await expect(input).toHaveValue('仅保存输入、技能与文件引用，不执行模型。')
+  await expect(editor.getByText('preview-notes', { exact: true })).toBeVisible()
+  await expect(editor.getByText('sample.pdf', { exact: true })).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-shared-composer.png'), animations: 'disabled' })
+  const native = await app.browserWindow(product)
+  await native.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+  await expect.poll(() => native.evaluate(window => window.getSize())).toEqual([WORKSPACE_WINDOW_MINIMUM.width, WORKSPACE_WINDOW_MINIMUM.height])
+  await editor.getByRole('button', { name: '取消', exact: true }).scrollIntoViewIfNeeded()
+  await expect(editor.getByRole('button', { name: '取消', exact: true })).toBeInViewport()
+  await expect(input).toBeInViewport()
+  await product.screenshot({ path: testInfo.outputPath('schedule-composer-minimum.png'), animations: 'disabled' })
+})
+
+test('native PDFE clarified schedule creation retains a separate execution conversation', async ({}, testInfo) => {
+  await scenario('page-conversation', 'schedules-created')
+  await product.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true }).click()
+  const proposal = product.getByTestId('schedule-proposal')
+  await expect(proposal).toHaveAttribute('aria-label', '已创建')
+  await expect(product.getByText(PREVIEW_CREATED_SCHEDULE.request, { exact: true })).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-created.png'), animations: 'disabled' })
+  await product.getByText('明确研究关键问题，用户已确认', { exact: true }).click()
+  const clarification = product.getByTestId('interaction-reply')
+  await expect(clarification).toContainText('每月1日 09:00（北京时间）')
+  await clarification.scrollIntoViewIfNeeded()
+  await product.screenshot({ path: testInfo.outputPath('schedule-created-clarification.png'), animations: 'disabled' })
+  const navigation = product.getByTestId('project-navigation')
+  const execution = navigation.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.schedule.name, exact: true })
+  await expect(execution).toHaveCount(0)
+  await proposal.getByRole('button', { name: '立即运行', exact: true }).click()
+  await expect(product.getByText('已提交执行，可在执行记录中查看进度。', { exact: true })).toBeVisible()
+  await expect(execution).toBeVisible()
+  await expect(navigation.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true })).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-created-navigation.png'), animations: 'disabled' })
+  await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+  await expect(product.getByTestId('schedule-proposal')).toHaveCount(0)
+  await navigation.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true }).click()
+  await expect(proposal).toHaveAttribute('aria-label', '已创建')
+  await product.getByRole('button', { name: '定时任务', exact: true }).click()
+  await expect(product.getByText(PREVIEW_CREATED_SCHEDULE.schedule.name, { exact: true }).first()).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-created-management.png'), animations: 'disabled' })
+  await product.getByRole('tab', { name: '执行记录', exact: true }).click()
+  await product.getByTestId('schedule-run-row').click()
+  await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+  await expect(product.getByTestId('schedule-proposal')).toHaveCount(0)
+  await product.screenshot({ path: testInfo.outputPath('schedule-created-execution.png'), animations: 'disabled' })
+})
+
+test('native PDFE schedule conversation starts with a generic task template', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-empty')
+  await product.getByRole('button', { name: '通过对话创建', exact: true }).click()
+  await expect(product.getByRole('textbox').filter({ visible: true }).last()).toHaveValue('帮我创建一个定时任务：每【时间间隔】执行【具体任务】')
+  await product.screenshot({ path: testInfo.outputPath('schedule-chat-template.png'), animations: 'disabled' })
+})
+
+test('native PDFE compact schedule receipt edits in management and runs independently', async ({}, testInfo) => {
+  await scenario('page-conversation', 'schedules-created')
+  const creator = product.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true })
+  await creator.click()
+  const card = product.getByTestId('schedule-proposal')
+  await expect(card).toHaveAttribute('aria-label', '已创建')
+  const reply = product.locator('[data-message-kind="agent"]').filter({ has: card })
+  await expect(reply).toHaveCount(1)
+  await expect(reply).toContainText('我已创建')
+  const copyReply = reply.getByRole('button', { name: '复制消息', exact: true })
+  await expect(copyReply).toBeVisible()
+  await expect.poll(async () => {
+    const bounds = await card.boundingBox()
+    const actions = await copyReply.boundingBox()
+    return bounds && actions && bounds.y + bounds.height <= actions.y
+  }).toBe(true)
+  await expect(card).not.toContainText('Asia/Shanghai')
+  await expect(card).not.toContainText('当前项目')
+  await expect(card).not.toContainText('不自动加入文献库')
+  const confirmation = product.getByText('如果想调整关注的产品名单、运行时间或报告格式，告诉我就行。', { exact: true })
+  await expect(confirmation).toBeVisible()
+  await expect.poll(async () => {
+    const receiptBounds = await card.boundingBox()
+    const confirmationBounds = await confirmation.boundingBox()
+    return receiptBounds && confirmationBounds && confirmationBounds.y + confirmationBounds.height <= receiptBounds.y
+  }).toBe(true)
+  const run = card.getByRole('button', { name: '立即运行', exact: true })
+  const open = card.getByRole('button', { name: '打开', exact: true })
+  await expect(open).toBeVisible()
+  expect((await open.boundingBox()).x).toBeLessThan((await run.boundingBox()).x)
+  const [response] = await Promise.all([
+    product.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/run')),
+    run.click(),
+  ])
+  expect(response.ok()).toBe(true)
+  await expect(product.getByText('已提交执行，可在执行记录中查看进度。', { exact: true })).toBeVisible()
+  await expect(product.getByTestId('schedule-editor')).toHaveCount(0)
+  await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+  await creator.click()
+  await card.scrollIntoViewIfNeeded()
+  await product.screenshot({ path: testInfo.outputPath('compact-receipt.png'), animations: 'disabled' })
+  await open.focus()
+  await product.keyboard.press('Enter')
+  const editor = product.getByTestId('schedule-editor')
+  await expect(editor).toBeVisible()
+  await expect(product.getByTestId('schedules-page')).toBeVisible()
+  await expect(editor.getByLabel('任务名称', { exact: true })).toHaveValue(PREVIEW_CREATED_SCHEDULE.schedule.name)
+  await expect(editor.getByTestId('schedule-composer-input')).toHaveValue(PREVIEW_CREATED_SCHEDULE.schedule.prompt)
+  await expect(editor).toContainText('每月')
+  await editor.getByLabel('任务名称', { exact: true }).fill('AI科研工具月度动态（已修改）')
+  await product.screenshot({ path: testInfo.outputPath('compact-receipt-editor.png'), animations: 'disabled' })
+  await editor.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(product.getByTestId('schedule-card')).toHaveCount(1)
+  await expect(product.getByTestId('schedule-card')).toContainText('AI科研工具月度动态（已修改）')
+  await creator.click()
+  await expect(card).toContainText('AI科研工具月度动态（已修改）')
+  const native = await app.browserWindow(product)
+  await native.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+  await card.scrollIntoViewIfNeeded()
+  await expect(run).toBeInViewport()
+  await expect(open).toBeInViewport()
+  await product.screenshot({ path: testInfo.outputPath('compact-receipt-minimum.png'), animations: 'disabled' })
+})
+
+for (const entry of ['receipt', 'management']) {
+  test(`native PDFE run now from ${entry} opens each new batch in one task entry`, async ({}, testInfo) => {
+    await scenario('page-conversation', 'schedules-created')
+    const navigation = product.getByTestId('project-navigation')
+    const taskName = PREVIEW_CREATED_SCHEDULE.schedule.name
+    for (let batch = 1; batch <= 2; batch++) {
+      if (entry === 'receipt') {
+        await navigation.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true }).click()
+      } else {
+        await product.getByTestId('project-schedules').click()
+      }
+      const card = entry === 'receipt'
+        ? product.getByTestId('schedule-proposal')
+        : product.getByTestId('schedule-card').filter({ hasText: taskName })
+      await card.hover()
+      const [response] = await Promise.all([
+        product.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/run')),
+        card.getByRole('button', { name: entry === 'receipt' ? '立即运行' : '立即执行', exact: true }).click(),
+      ])
+      expect(response.ok()).toBe(true)
+      const submitted = await response.json()
+      await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+      await expect(navigation.getByRole('button', { name: taskName, exact: true })).toHaveCount(1)
+      await expect(navigation.getByRole('button', { name: PREVIEW_CREATED_SCHEDULE.title, exact: true })).toHaveCount(1)
+      const selector = product.getByTestId('schedule-run-selector').getByRole('combobox')
+      await selector.click()
+      const options = product.getByRole('option')
+      await expect(options).toHaveCount(batch)
+      await expect(options.first()).toHaveAttribute('aria-selected', 'true')
+      await expect(options.first()).toHaveAttribute('data-value', submitted.run_id)
+      await expect(options.first()).toContainText('最新')
+      await product.screenshot({ path: testInfo.outputPath(`run-${entry}-${batch}.png`), animations: 'disabled' })
+      await product.keyboard.press('Escape')
+    }
+  })
+}
+
+for (const operation of ['archive', 'delete']) {
+  test(`native PDFE running batch ${operation} stops only that execution`, async ({}, testInfo) => {
+    await scenario('page-schedules', 'schedules-sample')
+    const name = '每日论文追踪（全状态演示）'
+    await product.getByTestId('project-navigation').getByRole('button', { name, exact: true }).click()
+    const requests = []
+    const capture = request => requests.push({ method: request.method(), path: new URL(request.url()).pathname })
+    product.on('request', capture)
+    try {
+      const history = product.getByTestId('schedule-overview-history')
+      await history.getByRole('button', { name: /^批次操作：/ }).first().click()
+      const action = product.getByRole('menuitem', { name: operation === 'archive' ? '归档本次执行' : '删除任务', exact: true })
+      await expect(action).toBeEnabled()
+      await action.click()
+      const dialog = product.getByRole('alertdialog')
+      await expect(dialog).toContainText('先立即终止')
+      await dialog.getByRole('button', { name: operation === 'archive' ? '归档本次执行' : '确认', exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      const stop = requests.findIndex(request => request.path.endsWith('/interrupt'))
+      expect(stop).toBeGreaterThanOrEqual(0)
+      const path = requests[stop].path.replace(/\/interrupt$/, '')
+      expect(requests.findIndex(request => request.path.startsWith(path) && (operation === 'archive' ? request.method === 'PUT' && request.path.endsWith('/archive') : request.method === 'DELETE'))).toBeGreaterThan(stop)
+      await expect(product.getByTestId('project-navigation').getByRole('button', { name, exact: true })).toHaveCount(1)
+      await product.getByTestId('project-schedules').click()
+      await expect(product.getByTestId('schedule-card').filter({ hasText: name }).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+      await product.screenshot({ path: testInfo.outputPath(`running-batch-${operation}.png`), animations: 'disabled' })
+    } finally {
+      product.off('request', capture)
+    }
+  })
+}
+
+for (const operation of ['archive', 'delete']) {
+  test(`native PDFE schedule group ${operation} stops running batches and preserves the plan`, async ({}, testInfo) => {
+    await scenario('page-schedules', 'schedules-sample')
+    const name = '每日论文追踪（全状态演示）'
+    const navigation = product.getByTestId('project-navigation')
+    await navigation.getByRole('button', { name, exact: true }).click()
+    const requests = []
+    const capture = request => {
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) requests.push({ method: request.method(), path: new URL(request.url()).pathname })
+    }
+    product.on('request', capture)
+    const row = navigation.locator('[data-testid^="project-task-"]').filter({ has: product.getByRole('button', { name, exact: true }) }).last()
+    await product.getByTestId('project-schedules').click()
+    await product.getByRole('heading', { name: '定时任务', exact: true }).first().hover()
+    await expect(row.getByRole('button', { name: '任务操作', exact: true })).toHaveCSS('opacity', '0')
+    await row.hover()
+    await row.getByRole('button', { name: '任务操作', exact: true }).click()
+    await expect(product.getByRole('menuitem', { name: '置顶', exact: true })).toBeVisible()
+    await expect(product.getByTestId('session-fork-menu')).toBeVisible()
+    await expect(product.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('shared-session-menu.png'), animations: 'disabled' })
+    await product.getByRole('menuitem', { name: operation === 'archive' ? '归档任务' : '删除任务', exact: true }).click()
+    const dialog = product.getByRole('alertdialog')
+    await expect(dialog).toContainText('定时任务及启停状态保持不变')
+    await dialog.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(navigation.getByRole('button', { name, exact: true })).toHaveCount(0)
+    await product.getByTestId('project-schedules').click()
+    const card = product.getByTestId('schedule-card').filter({ hasText: name })
+    await expect(card).toBeVisible()
+    await expect(card.getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+    const interrupt = requests.findIndex(request => request.path.endsWith('/interrupt'))
+    expect(interrupt).toBeGreaterThanOrEqual(0)
+    expect(requests.some(request => request.method === 'DELETE' && request.path.includes('/schedules/'))).toBe(false)
+    const sessionPath = requests[interrupt].path.replace(/\/interrupt$/, '')
+    const removal = requests.findIndex(request => request.path.startsWith(sessionPath) && (operation === 'delete' ? request.method === 'DELETE' : request.path.endsWith('/archive')))
+    expect(removal).toBeGreaterThan(interrupt)
+    await product.screenshot({ path: testInfo.outputPath(`group-${operation}-preserved-plan.png`), animations: 'disabled' })
+    await card.hover()
+    await card.getByRole('button', { name: '立即执行', exact: true }).click()
+    await expect(navigation.getByRole('button', { name, exact: true })).toHaveCount(1)
+    await expect(product.getByText('模拟执行已完成，未运行真实模型、工具或后台调度。', { exact: true })).toBeVisible()
+    product.off('request', capture)
+  })
+}
+
+test('native PDFE schedule group retains conversations when interruption fails', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-sample')
+  const name = '每日论文追踪（全状态演示）'
+  const navigation = product.getByTestId('project-navigation')
+  const removals = []
+  const capture = request => {
+    if (request.method() === 'DELETE' || (request.method() === 'PUT' && request.url().endsWith('/archive'))) removals.push(request.url())
+  }
+  const interrupt = '**/api/serve/sessions/*/interrupt'
+  await product.route(interrupt, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false }) }))
+  product.on('request', capture)
+  try {
+    await navigation.getByRole('button', { name, exact: true }).click()
+    const row = navigation.locator('[data-testid^="project-task-"]').filter({ has: product.getByRole('button', { name, exact: true }) }).last()
+    await row.hover()
+    await row.getByRole('button', { name: '任务操作', exact: true }).click()
+    await product.getByRole('menuitem', { name: '删除任务', exact: true }).click()
+    const dialog = product.getByRole('alertdialog')
+    await dialog.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(dialog).toContainText('未能终止的执行不会被归档或删除')
+    expect(removals).toEqual([])
+    await expect(navigation.getByRole('button', { name, exact: true })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('group-interrupt-failed.png'), animations: 'disabled' })
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  } finally {
+    product.off('request', capture)
+    await product.unroute(interrupt)
+  }
+})
+
+test('native PDFE schedule clarification stops before plan creation', async ({}, testInfo) => {
+  await scenario('page-conversation', 'schedules-clarification')
+  await expect(product.getByTestId('project-navigation')).toBeVisible()
+  await expect(product.getByTestId('workspace-conversation')).toBeVisible()
+  await expect(product.getByTestId('task-monitor-toggle')).toHaveCount(0)
+  const question = product.getByText(PREVIEW_CREATED_SCHEDULE.request, { exact: true }).first()
+  const answer = product.getByText('可以，我先确认你关注的产品范围、月报时间和报告格式，再整理计划供你确认。', { exact: true })
+  await expect(question).toBeVisible()
+  await expect(answer).toBeVisible()
+  expect((await question.boundingBox()).x).toBeGreaterThan((await answer.boundingBox()).x)
+  await expect(product.getByTestId('schedule-proposal')).toHaveCount(0)
+  await expect(product.getByText('重点关注哪些科研 AI 工具和动态？', { exact: false })).toBeVisible()
+  await expect(product.getByRole('radiogroup', { name: '关注方向', exact: true })).toBeVisible()
+  await expect(product.getByRole('radio', { name: '文献检索与综述、想法生成、实验自动化', exact: true })).not.toBeChecked()
+  await expect(product.getByRole('button', { name: '下一项', exact: true })).toBeDisabled()
+  await product.screenshot({ path: testInfo.outputPath('schedule-pending-clarification.png'), animations: 'disabled' })
+  await controls.screenshot({ path: testInfo.outputPath('schedule-conversation-scenes.png'), animations: 'disabled' })
+})
+
+test('native PDFE schedule boundaries stop and retry a single execution', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-sample')
+  const page = product.getByTestId('schedules-page')
+  await page.getByRole('tab', { name: '执行记录', exact: true }).click()
+  const runs = page.getByTestId('schedule-run-row').filter({ hasText: '每日论文追踪（全状态演示）' })
+  const running = runs.filter({ hasText: '运行中' })
+  const failed = runs.filter({ hasText: '失败' }).filter({ has: product.getByRole('button', { name: '重试', exact: true }) }).first()
+  await running.getByRole('button', { name: '终止', exact: true }).click()
+  await expect(running).toHaveCount(0)
+  const count = await runs.count()
+  await failed.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(runs).toHaveCount(count + 1)
+  await expect(runs.first()).toContainText('成功')
+  await product.screenshot({ path: testInfo.outputPath('schedule-stop-and-retry.png'), animations: 'disabled' })
+})
+
+test('native PDFE schedule boundaries retry a partially failed batch archive', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-archive-partial-failure')
+  await product.getByTestId('schedule-card').filter({ hasText: '每日论文追踪（全状态演示）' }).click()
+  const overview = product.getByTestId('schedule-overview-history')
+  await overview.getByRole('button', { name: /^批次操作/ }).first().click()
+  await product.getByRole('menuitem', { name: '批量操作', exact: true }).click()
+  await overview.getByRole('checkbox', { name: '全选可归档批次' }).click()
+  await overview.getByRole('button', { name: /^归档所选/ }).click()
+  const confirm = product.getByRole('alertdialog')
+  await confirm.getByRole('button', { name: '归档本次执行', exact: true }).click()
+  await expect(confirm.getByText('部分批次未能归档，已保留选择，可重试。已成功归档的批次不会重复操作。')).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-batch-partial-archive.png'), animations: 'disabled' })
+  await confirm.getByRole('button', { name: '归档本次执行', exact: true }).click()
+  await expect(confirm).toHaveCount(0)
+})
+
+test('native PDFE schedule boundaries open and restore an archived execution', async ({}, testInfo) => {
+  await scenario('page-resource', 'schedules-archived-runs')
+  await product.getByTestId('project-archive-toggle').click()
+  const archived = product.getByTestId('project-archived-list').locator('[data-testid^="project-archived-task-"]')
+  await archived.getByRole('button', { name: '每日论文追踪（全状态演示）' }).click()
+  await expect(product.getByText(componentsZh.taskArchive.readonly, { exact: true })).toBeVisible()
+  await expect(product.getByTestId('composer-send')).toBeDisabled()
+  await expect(product.getByText(/「每日论文追踪（全状态演示）」模拟执行已完成/)).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-archived-execution.png'), animations: 'disabled' })
+  await archived.hover()
+  await archived.getByRole('button', { name: componentsZh.taskArchive.restoreTask, exact: true }).click()
+  await expect(archived).toHaveCount(0)
+})
+
+test('native PDFE schedule boundaries recover a failed read', async ({}, testInfo) => {
+  await scenario('page-schedules', 'schedules-load-failure')
+  const page = product.getByTestId('schedules-page')
+  const retry = page.getByRole('alert').getByRole('button', { name: '重试', exact: true })
+  await expect(retry).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('schedule-load-failed.png'), animations: 'disabled' })
+  await controls.getByTestId('preview-schedules-recover').click()
+  await retry.click()
+  await expect(retry).toHaveCount(0)
+  await expect(page.getByText('暂无定时任务', { exact: true })).toBeVisible()
+})
+
+test('native PDFE personalized discovery hides discipline filters and keeps popular feed', async ({}, testInfo) => {
+  await scenario('page-discovery', 'paper-discovery-personalized')
+  const discovery = product.getByTestId('literature-discovery-page')
+  await discovery.getByRole('tab', { name: '为你推荐', exact: true }).click()
+  await expect(discovery.getByTestId('discovery-paper-rpeg')).toBeVisible()
+  await expect(discovery.getByText('引用量暂未收录', { exact: true })).toHaveCount(0)
+  await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+  await expect(discovery.getByTestId('discovery-paper-psydepth')).toBeVisible()
+  await expect(discovery.getByLabel('引用 12 次', { exact: true })).toBeVisible()
+  await expect(discovery.getByTestId('discovery-paper-rpeg')).toHaveCount(0)
+  await product.screenshot({ path: testInfo.outputPath('pdfe-personalized-refreshed.png'), animations: 'disabled' })
+  await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+  await expect(discovery.getByTestId('discovery-paper-rpeg')).toBeVisible()
+  await expect(discovery.getByRole('group')).toHaveCount(0)
+  await product.screenshot({
+    path: testInfo.outputPath('pdfe-personalized.png'),
+    animations: 'disabled',
+  })
+  await discovery.getByRole('tab', { name: '热门推荐', exact: true }).click()
+  await expect(discovery.getByRole('tab', { name: /^本周/ })).toBeVisible()
+  expect((await discovery.getByRole('tab').allTextContents()).slice(0, 2)).toEqual(['为你推荐', '热门推荐'])
+  await product.screenshot({ path: testInfo.outputPath('pdfe-feed-tab-order.png'), animations: 'disabled' })
+  await expect(discovery.getByRole('tab', { name: /^今天/ })).toHaveCount(0)
+  await product.getByTestId('activity-literature').click()
+  await expect(discovery).toHaveCount(0)
+  await product.getByTestId('activity-discovery').click()
+  await expect(discovery).toBeVisible()
+  const native = await app.browserWindow(product)
+  await native.evaluate((window, size) => window.setSize(size.width, size.height), WORKSPACE_WINDOW_MINIMUM)
+  await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
+  await controls.getByRole('option', { name: zh.english, exact: true }).click()
+  const personal = discovery.getByRole('tab', { name: 'For you', exact: true })
+  await personal.focus()
+  await personal.press('Enter')
+  await expect(personal).toHaveAttribute('aria-selected', 'true')
+  await expect(discovery.getByRole('group')).toHaveCount(0)
+  await product.screenshot({ path: testInfo.outputPath('pdfe-personalized-narrow-en.png'), animations: 'disabled' })
+})
+
+test('native PDFE paper discovery uses the shared recommendation and reading views', async ({}, testInfo) => {
+  await scenario('page-discovery', 'paper-discovery-curated')
+  const discovery = product.getByTestId('literature-discovery-page')
+  await expect(discovery.getByRole('tab', { name: '为你推荐', exact: true })).toHaveCount(0)
+  await expect(discovery.getByRole('tab', { name: /^今天/ })).toHaveCount(0)
+  const paper = discovery.getByTestId('discovery-paper-psydepth')
+  await expect(paper).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('pdfe-paper-discovery.png'), animations: 'disabled' })
+  await paper.getByRole('button', { name: /^速读 / }).click()
+  await expect(discovery.getByTestId('discovery-reading')).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('pdfe-paper-reader.png'), animations: 'disabled' })
+  await discovery.getByTestId('join-library-trigger').first().click()
+  const [receipt] = await Promise.all([
+    product.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/imports/bibliography'),
+    product.getByRole('menuitem', { name: '直接加入', exact: true }).click(),
+  ])
+  expect(receipt.status()).toBe(201)
+  await expect(discovery.getByText('已加入', { exact: true }).first()).toBeVisible()
+  await product.screenshot({ path: testInfo.outputPath('pdfe-paper-admitted.png'), animations: 'disabled' })
+  await discovery.getByRole('button', { name: '返回论文推荐' }).click()
+  await expect(paper).toBeVisible()
+})
 
 async function reloadCenter(action) {
   await Promise.all([
@@ -1948,7 +3325,7 @@ test('native scenario controls, F8 and help preserve the same product draft and 
   await composer.fill('原生 PDFE 草稿保持')
   const original = await composer.elementHandle()
   const nativeControls = await app.browserWindow(controls)
-  await controls.getByRole('button', { name: '收起工作台', exact: true }).click()
+  await workspaceShortcut('F8')
   await expect.poll(() => nativeControls.evaluate(window => window.isVisible())).toBe(false)
   const nativeProduct = await app.browserWindow(product)
   await nativeProduct.evaluate(window => {
@@ -1996,7 +3373,7 @@ test('native controls preserve settings selection across collapse and native vie
     const original = await archives.elementHandle()
     const window = await app.browserWindow(product)
     const width = await window.evaluate(window => window.getContentSize()[0])
-    await controls.getByRole('button', { name: zh.close, exact: true }).click()
+    await workspaceShortcut('F8')
     await expect.poll(() => product.evaluate(() => innerWidth)).toBe(width)
     await workspaceShortcut('F8', ['shift'])
     await expect.poll(() => product.evaluate(() => innerWidth)).toBe(width)
@@ -2019,7 +3396,7 @@ test('native controls preserve settings selection across collapse and native vie
     await window.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
     await expect(selection).toBeChecked()
     await product.screenshot({ path: testInfo.outputPath('native-settings-selection-minimum.png') })
-    await controls.getByRole('button', { name: zh.close, exact: true }).click()
+    await workspaceShortcut('F8')
     await expect(selection).toBeChecked()
     expect(await archives.evaluate((node, previous) => node === previous, original)).toBe(true)
     await workspaceShortcut('F8')
@@ -2096,7 +3473,7 @@ test('native docked resizing preserves project form and workbench search without
   await expect.poll(() => product.evaluate(() => innerWidth)).toBe(total - resizedWidth)
   await expect.poll(() => controls.evaluate(() => innerWidth)).toBe(resizedWidth)
   writeFileSync(testInfo.outputPath('native-resize-pointer.json'), JSON.stringify({ pointerEvents, resizedWidth, total }, null, 2))
-  await controls.getByRole('button', { name: zh.close, exact: true }).click()
+  await workspaceShortcut('F8')
   await expect.poll(() => product.evaluate(() => innerWidth)).toBe(total)
   await expect(cancel).toBeFocused()
   await workspaceShortcut('F8')
@@ -2142,6 +3519,7 @@ test('native docked resizing preserves project form and workbench search without
 test('native scrollbar thumbs keep token colors and geometry in both themes', async ({}, testInfo) => {
   await scenario('viewer-markdown', 'viewer-markdown-states')
   await expect(product.getByRole('heading', { name: 'Minimal Project', exact: true })).toBeVisible()
+  await controls.getByTestId('preview-settings-toggle').click()
   const observations = []
   for (const theme of ['light', 'dark']) {
     const choice = controls.locator('#preview-theme')
@@ -2227,7 +3605,7 @@ test('native dock and detach preserve both renderer documents, draft and workben
   await divider.focus()
   await divider.press('ArrowLeft')
   await expect.poll(() => product.evaluate(() => innerWidth)).toBe(dockedWidth - 20)
-  await controls.getByRole('button', { name: '收起工作台', exact: true }).click()
+  await workspaceShortcut('F8')
   await expect.poll(() => product.evaluate(() => innerWidth)).toBe(totalWidth)
   await workspace.evaluate(window => {
     window.contentView.children[0].webContents.sendInputEvent({ type: 'keyDown', keyCode: 'F8' })
@@ -2422,7 +3800,7 @@ for (const target of [
   test('native project new tab keeps its identity through selection, closing and reentry: ' + target.kind, { annotation: previewConsumption('viewer-new_tab', 'viewer-new_tab-states', ['opened', target.kind, 'closed', 'reentered']) }, async ({}, testInfo) => {
     await normalUi(testInfo, async () => {
       await scenario('viewer-new_tab', 'viewer-new_tab-states')
-      await controls.getByRole('button', { name: zh.close, exact: true }).click()
+      await workspaceShortcut('F8')
       await product.getByTestId('project-library').click()
       const library = product.getByRole('tab', { name: '项目文件', exact: false }).filter({ has: product.getByRole('button', { name: /项目文件/ }) })
       const originalLibrary = await library.elementHandle()
@@ -2528,7 +3906,7 @@ test('native project layout preserves mounted controls and persists panel placem
       await placement(true)
       await product.getByTestId('project-library').click()
       await expect(product.getByTestId('project-library-content')).toBeVisible()
-      await controls.getByRole('button', { name: zh.close, exact: true }).click()
+      await workspaceShortcut('F8')
       const window = await app.browserWindow(product)
       await window.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
       await expect.poll(() => window.evaluate(window => window.getSize())).toEqual([WORKSPACE_WINDOW_MINIMUM.width, WORKSPACE_WINDOW_MINIMUM.height])
@@ -3449,6 +4827,330 @@ test('native embedded render failure recovers locally without changing project o
   }
 })
 
+test('native discovery hierarchy places abstracts before the expanded reading', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const discovery = product.getByTestId('literature-discovery-page')
+    await expect(discovery.getByPlaceholder(literatureZh.discovery.searchPlaceholder)).toBeVisible()
+    await expect(discovery.getByRole('button', { name: literatureZh.discovery.prototype.configure, exact: true })).toHaveCount(1)
+    await expect(discovery.getByText(literatureZh.discovery.prototype.hintTitle, { exact: true })).toHaveCount(0)
+    await product.screenshot({ path: testInfo.outputPath('discovery-hierarchy.png'), animations: 'disabled' })
+    await discovery.getByTestId('discovery-paper-psydepth').getByRole('button', { name: /^速读 / }).click()
+    const reader = discovery.getByTestId('discovery-reading')
+    const abstract = reader.getByRole('heading', { name: literatureZh.discovery.prototype.abstract, exact: true })
+    const overview = reader.getByRole('heading', { name: literatureZh.discovery.prototype.overview, exact: true })
+    await expect(abstract).toBeVisible()
+    expect((await abstract.boundingBox()).y).toBeLessThan((await overview.boundingBox()).y)
+    await product.screenshot({ path: testInfo.outputPath('abstract-first.png'), animations: 'disabled' })
+    await reader.getByRole('navigation').getByRole('button', { name: literatureZh.discovery.prototype.overview, exact: true }).click()
+    await expect(overview).toBeInViewport()
+    await expect.poll(async () => Math.round((await overview.boundingBox()).y)).toBeLessThan(300)
+    await expect(reader.getByText('7 位读者对 60 组匿名故事配对进行评价。', { exact: false })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('expanded-reading.png'), animations: 'disabled' })
+  })
+})
+
+test('native discovery bookmark displays authors and preserves admission', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const card = product.getByTestId('discovery-paper-psydepth')
+    const citations = card.getByLabel('引用 12 次', { exact: true })
+    await citations.hover()
+    await expect(product.getByRole('tooltip')).toContainText('Semantic Scholar')
+    const saved = product.getByTestId('discovery-paper-leandojo2').getByRole('button', { name: '已加入', exact: true })
+    await expect(saved).toBeVisible()
+    await expect(saved).toHaveClass(/vds-brand-light-bg-default/)
+    await expect(card.getByText('Ruichen Zheng, Yihe Wang, Fabrice Harel-Canada, Sara Khosravi, Zeynep Senahan Yildiz, Amit Sahai, Nanyun Peng', { exact: true })).toBeVisible()
+    const bookmark = card.getByRole('button', { name: '加入文献库', exact: true })
+    await expect(bookmark).toHaveText('')
+    await expect(bookmark).not.toHaveAttribute('title')
+    await bookmark.hover()
+    await expect(product.getByRole('tooltip')).toHaveText('加入文献库')
+    await product.screenshot({ path: testInfo.outputPath('bookmark-authors.png'), animations: 'disabled' })
+    await bookmark.click()
+    await expect(product.getByRole('menu')).toBeVisible()
+    await expect(product.getByTestId('discovery-reading')).toHaveCount(0)
+  })
+})
+
+test('native discovery cold start offers optional interests without gating browsing', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-discovery-curated')
+    const discovery = product.getByTestId('literature-discovery-page')
+    await discovery.getByRole('tab', { name: '为你推荐', exact: true }).click()
+    const cards = discovery.locator('[data-testid^="discovery-paper-"]')
+    await expect(cards).toHaveCount(3)
+    await expect(discovery.getByTestId('discovery-paper-flip')).toBeVisible()
+    await expect(discovery.getByRole('button', { name: '推理模型', exact: true })).toHaveCount(0)
+    await expect(discovery.getByRole('textbox', { name: '自填研究领域', exact: true })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('cold-start-browse.png'), animations: 'disabled' })
+    await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+    await expect(discovery.getByTestId('discovery-paper-leandojo2')).toBeVisible()
+    await expect(discovery.getByTestId('discovery-paper-flip')).toHaveCount(0)
+    await controls.getByTestId('preview-settings-toggle').click()
+    await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
+    await controls.getByRole('option', { name: zh.english, exact: true }).click()
+    const native = await app.browserWindow(product)
+    await native.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
+    await discovery.getByRole('tab', { name: literatureEn.discovery.feed.personal, exact: true }).click()
+    await expect(discovery.getByRole('button', { name: 'Reasoning models', exact: true })).toHaveCount(0)
+    await expect(discovery.getByRole('textbox', { name: literatureEn.discovery.feed.customInterest, exact: true })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('cold-start-english-narrow.png'), animations: 'disabled' })
+    await scenario('page-discovery', 'paper-discovery-personalized', en)
+    await discovery.getByRole('tab', { name: literatureEn.discovery.feed.personal, exact: true }).click()
+    await expect(discovery.getByRole('button', { name: 'Reasoning models', exact: true })).toHaveCount(0)
+    await expect(discovery.getByRole('textbox', { name: literatureEn.discovery.feed.customInterest, exact: true })).toBeVisible()
+    await expect(discovery.getByTestId('discovery-paper-rpeg')).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('established-interests.png'), animations: 'disabled' })
+  })
+})
+
+test('native discovery accepts custom interests without filtering or resetting the batch', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-discovery-curated')
+    const discovery = product.getByTestId('literature-discovery-page')
+    await discovery.getByRole('tab', { name: '为你推荐', exact: true }).click()
+    await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+    await expect(discovery.getByTestId('discovery-paper-leandojo2')).toBeVisible()
+    const cards = discovery.locator('[data-testid^="discovery-paper-"]')
+    const originalCards = await cards.allTextContents()
+    const field = discovery.getByRole('textbox', { name: '自填研究领域', exact: true })
+    const add = discovery.getByRole('button', { name: '添加', exact: true })
+    await expect(add).toBeDisabled()
+    await field.fill('   ')
+    await expect(add).toBeDisabled()
+    await field.fill('  强化学习  ')
+    await field.press('Enter')
+    await expect(field).toHaveValue('')
+    await expect(discovery.getByRole('button', { name: '移除强化学习', exact: true })).toBeVisible()
+    await expect.poll(() => cards.allTextContents()).toEqual(originalCards)
+    await field.fill('强化学习')
+    await add.click()
+    await expect(discovery.getByRole('button', { name: '移除强化学习', exact: true })).toHaveCount(1)
+    await field.fill('推理模型')
+    await field.press('Enter')
+    await expect(discovery.getByRole('button', { name: '推理模型', exact: true })).toHaveCount(0)
+    await expect(discovery.getByRole('button', { name: '移除推理模型', exact: true })).toBeVisible()
+    await expect.poll(() => cards.allTextContents()).toEqual(originalCards)
+    await product.screenshot({ path: testInfo.outputPath('custom-interest-selected.png'), animations: 'disabled' })
+    await discovery.getByRole('button', { name: '移除推理模型', exact: true }).click()
+    await discovery.getByRole('button', { name: '移除强化学习', exact: true }).click()
+    await expect.poll(() => cards.allTextContents()).toEqual(originalCards)
+    await field.fill('土壤微生物')
+    await field.press('Enter')
+    await expect(discovery.getByRole('button', { name: '移除土壤微生物', exact: true })).toBeVisible()
+    await expect.poll(() => cards.allTextContents()).toEqual(originalCards)
+    await product.screenshot({ path: testInfo.outputPath('keyword-preferences.png'), animations: 'disabled' })
+    await discovery.getByRole('button', { name: '移除土壤微生物', exact: true }).click()
+    await expect.poll(() => cards.allTextContents()).toEqual(originalCards)
+  })
+})
+
+test('native discovery recommendation feedback excludes dismissed papers from batches', async ({}, testInfo) => {
+  await scenario('page-discovery', 'paper-discovery-personalized')
+  const discovery = product.getByTestId('literature-discovery-page')
+  await discovery.getByRole('tab', { name: '为你推荐', exact: true }).click()
+  const card = discovery.getByTestId('discovery-paper-rpeg')
+  const recommend = card.getByRole('button', { name: '推荐', exact: true })
+  await recommend.click()
+  await expect(recommend).toHaveAttribute('aria-pressed', 'true')
+  await expect(discovery.getByRole('tab', { name: '为你推荐', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await card.getByRole('button', { name: '不感兴趣', exact: true }).click()
+  await expect(card).toHaveCount(0)
+  await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+  await discovery.getByRole('button', { name: '换一换', exact: true }).click()
+  await expect(card).toHaveCount(0)
+  await discovery.getByRole('tab', { name: '热门推荐', exact: true }).click()
+  await expect(discovery.getByRole('button', { name: '恢复隐藏的论文', exact: true })).toHaveCount(0)
+  await product.screenshot({ path: testInfo.outputPath('paper-not-interested.png'), animations: 'disabled' })
+})
+
+test('native discovery paper discussion prefills a draft without sending', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const card = product.getByTestId('discovery-paper-psydepth')
+    await card.getByRole('button', { name: /^速读 / }).click()
+    await product.getByRole('button', { name: '与书深 AI 对话', exact: true }).click()
+    const input = product.getByTestId('composer-input')
+    await expect(input).toBeVisible()
+    await expect(input).toHaveValue(/Does Reasoning Improve Psychological Depth/)
+    await expect(input).toHaveValue(/Ruichen Zheng/)
+    await expect(input).toHaveValue(/2611.09061/)
+    await expect(input).toHaveValue(/推理基准/)
+    await expect(product.getByTestId('user-bubble')).toHaveCount(0)
+    await product.screenshot({ path: testInfo.outputPath('paper-discussion-draft.png'), animations: 'disabled' })
+  })
+})
+
+test('native discovery exposes icon actions with single hover hints', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const discovery = product.getByTestId('literature-discovery-page')
+    const card = discovery.getByTestId('discovery-paper-psydepth')
+    await expect(card.getByRole('button', { name: '更多操作', exact: true })).toHaveCount(0)
+    for (const name of ['推荐', '复制原文链接', '不感兴趣']) {
+      const action = card.getByRole('button', { name, exact: true })
+      await expect(action).toBeVisible()
+      await expect(action).toHaveText('')
+      await expect(action).not.toHaveAttribute('title')
+      await action.hover()
+      await expect(product.getByRole('tooltip')).toHaveText(name)
+    }
+    await product.screenshot({ path: testInfo.outputPath('paper-icon-actions.png'), animations: 'disabled' })
+    const before = await discovery.getByRole('group').innerText()
+    const like = card.getByRole('button', { name: '推荐', exact: true })
+    const dislike = card.getByRole('button', { name: '不感兴趣', exact: true })
+    await like.click()
+    await expect(like).toHaveAttribute('aria-pressed', 'true')
+    expect(await discovery.getByRole('group').innerText()).toBe(before)
+    await product.screenshot({ path: testInfo.outputPath('paper-liked.png'), animations: 'disabled' })
+    await expect(discovery.getByTestId('discovery-reading')).toHaveCount(0)
+    await card.getByRole('button', { name: '复制原文链接', exact: true }).click()
+    await expect.soft(product.getByText(literatureZh.discovery.prototype.copied, { exact: true })).toBeVisible()
+    await dislike.click()
+    await expect(card).toHaveCount(0)
+  })
+})
+
+test('native discovery reading exposes structured references and collapsible sources', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const discovery = product.getByTestId('literature-discovery-page')
+    await expect(discovery.getByRole('button', { name: '查看要点', exact: true })).toHaveCount(0)
+    for (const id of ['leandojo2', 'rpeg', 'psydepth']) {
+      await discovery.getByTestId(`discovery-paper-${id}`).getByRole('button', { name: /^速读 / }).click()
+      const reader = discovery.getByTestId('discovery-reading')
+      const headings = await reader.getByRole('heading', { level: 2 }).allTextContents()
+      expect(headings[0]).toBe('摘要')
+      expect(headings[1]).toBe('书深解读')
+      const toggle = reader.getByRole('button', { name: '书深解读', exact: true }).first()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      await toggle.click()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await toggle.press('Enter')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      if (id !== 'psydepth') await discovery.getByRole('button', { name: literatureZh.discovery.curated.back }).click()
+    }
+    const reader = discovery.getByTestId('discovery-reading')
+    await expect(discovery.getByRole('button', { name: '查看原文', exact: true })).toBeVisible()
+    await expect(discovery.getByRole('button', { name: '加入文献库', exact: true }).first()).toHaveText('加入文献库')
+    await expect(reader.getByRole('button', { name: '溯源 3，原文第 6 页' })).toBeVisible()
+    for (const [index, page, location] of [[1, 1, 'Abstract / Introduction'], [2, 4, '4 Human Study'], [3, 6, 'Table 2 / Figure 2']]) {
+      await reader.getByRole('button', { name: `溯源 ${index}，原文第 ${page} 页`, exact: true }).hover()
+      await expect(product.getByRole('tooltip')).toContainText(location)
+      await expect(product.getByRole('tooltip')).toContainText(`原文第 ${page} 页`)
+    }
+    await reader.getByRole('navigation').getByRole('button', { name: '书深解读', exact: true }).click()
+    await expect(reader.getByRole('heading', { name: '书深解读', exact: true })).toBeInViewport()
+    await product.screenshot({ path: testInfo.outputPath('reading-sources.png'), animations: 'disabled' })
+    await reader.getByRole('navigation').getByRole('button', { name: '参考文献', exact: true }).click()
+    const reference = reader.getByRole('link', { name: 'Fitting linear mixed-effects models using lme4', exact: true })
+    await expect(reference).toBeInViewport()
+    await reference.hover()
+    await expect(reference.locator('xpath=ancestor::li').getByRole('button', { name: '加入文献库', exact: true })).toHaveText('加入文献库')
+    await expect(reader.getByText('D. Bates, M. Mächler, B. Bolker, and S. Walker', { exact: false }).first()).toBeVisible()
+    const citationCount = reader.getByLabel('引用 3250 次', { exact: true }).first()
+    await expect(citationCount).toBeVisible()
+    await citationCount.hover()
+    await expect(product.getByRole('tooltip')).toHaveText('来源：Semantic Scholar · 更新于 2026-11-12 (模拟数据)')
+    await product.screenshot({ path: testInfo.outputPath('structured-references.png'), animations: 'disabled' })
+    await discovery.getByRole('button', { name: '查看原文', exact: true }).click()
+    const browser = product.getByTestId('browser-workspace')
+    await expect(browser.getByRole('textbox', { name: browserZh.address, exact: true })).toHaveValue('https://arxiv.org/pdf/2611.09061')
+    await expect(browser.getByTestId('browser-viewport').locator('img')).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('original-pdf.png'), animations: 'disabled' })
+    await product.getByRole('tab', { name: '论文发现', exact: true }).click()
+    await reader.getByRole('navigation').getByRole('button', { name: '书深解读', exact: true }).click()
+    await reader.getByRole('button', { name: '溯源 3，原文第 6 页' }).click()
+    await expect(browser.getByRole('textbox', { name: browserZh.address, exact: true })).toHaveValue('https://arxiv.org/pdf/2611.09061#page=6')
+    await expect(browser.getByTestId('browser-viewport').locator('img')).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('source-page-six.png'), animations: 'disabled' })
+  })
+})
+
+test('native discovery search tabs close independently and return to the library', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const discovery = product.getByTestId('literature-discovery-page')
+    const input = discovery.getByRole('textbox', { name: literatureZh.discovery.searchLabel })
+    await input.fill('推理模型')
+    await input.press('Enter')
+    await expect(product.getByTestId('literature-search-tab')).toBeVisible()
+    await product.getByRole('tab', { name: '论文发现', exact: true }).click()
+    await input.fill('reasoning models')
+    await input.press('Enter')
+    await expect(product.getByTestId('literature-search-tab')).toBeVisible()
+    await product.getByRole('button', { name: '关闭 文献搜索：推理模型', exact: true }).click()
+    await expect(product.getByRole('tab', { name: '文献搜索：推理模型', exact: true })).toHaveCount(0)
+    await expect(product.getByRole('tab', { name: '文献搜索：reasoning models', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await product.getByRole('button', { name: '关闭 文献搜索：reasoning models', exact: true }).click()
+    await expect(product.getByRole('tab', { name: /文献搜索：/ })).toHaveCount(0)
+    await expect(product.getByRole('tab', { name: '论文发现', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(discovery).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('search-tabs-closed.png'), animations: 'disabled' })
+  })
+})
+
+test('native discovery search opens results and prepares only selected papers without sending', async ({}, testInfo) => {
+  await normalUi(testInfo, async () => {
+    await scenario('page-discovery', 'paper-search-reasoning')
+    const discovery = product.getByTestId('literature-discovery-page')
+    const input = discovery.getByRole('textbox', { name: literatureZh.discovery.searchLabel })
+    await expect(discovery.getByRole('button', { name: literatureZh.discovery.searchLabel, exact: true })).toBeDisabled()
+    await input.fill('   ')
+    await input.press('Enter')
+    await expect(discovery).toBeVisible()
+    await expect(discovery.getByRole('button', { name: literatureZh.discovery.searchLabel, exact: true })).toBeDisabled()
+    await input.fill('')
+    await expect(discovery.getByText(literatureZh.discovery.searchHint, { exact: true })).toHaveCount(0)
+    await expect(discovery.getByTestId('paper-thumbnail').first()).toBeVisible()
+    const recommendationRows = discovery.locator('[data-testid^="discovery-paper-"]')
+    const firstRecommendation = await recommendationRows.nth(0).boundingBox()
+    const secondRecommendation = await recommendationRows.nth(1).boundingBox()
+    expect(secondRecommendation.x).toBe(firstRecommendation.x)
+    expect(secondRecommendation.y).toBeGreaterThanOrEqual(firstRecommendation.y + firstRecommendation.height)
+    await product.screenshot({ path: testInfo.outputPath('discovery-search-figures.png'), animations: 'disabled' })
+    await discovery.getByTestId('paper-thumbnail').first().scrollIntoViewIfNeeded()
+    await expect(discovery.getByTestId('paper-thumbnail').first().locator('img')).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('discovery-paper-figure.png'), animations: 'disabled' })
+    const turns = []
+    product.on('request', request => {
+      if (request.method() === 'POST' && /\/turns$/.test(new URL(request.url()).pathname)) turns.push(request.url())
+    })
+    await input.fill('推理模型')
+    await expect(discovery.getByRole('button', { name: literatureZh.discovery.searchLabel, exact: true })).toBeEnabled()
+    await product.screenshot({ path: testInfo.outputPath('search-input-focused.png'), animations: 'disabled' })
+    await input.press('Enter')
+    const results = product.getByTestId('literature-search-tab')
+    await expect(results).toBeVisible()
+    const rows = results.locator('[data-testid^="search-paper-"]')
+    await expect(rows).toHaveCount(3)
+    await expect(rows.first()).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('reasoning-search-results.png'), animations: 'disabled' })
+    const selectedTitle = await rows.first().locator('a').first().textContent()
+    await rows.first().getByRole('checkbox').check()
+    await results.getByRole('button', { name: literatureZh.discovery.continueAI, exact: true }).click()
+    const composer = product.getByTestId('composer-input')
+    await expect(composer).toHaveValue('')
+    await expect(product.getByTestId('user-message-text').filter({ hasText: '推理模型' })).toBeVisible()
+    const reply = product.getByRole('heading', { name: `1. ${selectedTitle}`, exact: true })
+    await expect(reply).toBeVisible()
+    await expect(product.getByRole('heading', { name: /RPEG: Training/ })).toHaveCount(0)
+    expect(turns).toEqual([])
+    await product.screenshot({ path: testInfo.outputPath('search-selected-conversation.png'), animations: 'disabled' })
+    await rows.first().getByRole('checkbox').uncheck()
+    await results.getByRole('button', { name: literatureZh.discovery.continueAI, exact: true }).click()
+    await expect(product.getByRole('heading', { name: /RPEG: Training/ })).toBeVisible()
+    await expect(product.getByRole('heading', { name: /LeanDojo-v2:/ })).toBeVisible()
+    expect(turns).toEqual([])
+    await product.screenshot({ path: testInfo.outputPath('search-all-conversation.png'), animations: 'disabled' })
+    await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
+    await controls.getByRole('option', { name: zh.english, exact: true }).click()
+    await expect(results.getByRole('button', { name: literatureEn.discovery.continueAI, exact: true })).toBeVisible()
+    await product.screenshot({ path: testInfo.outputPath('search-english.png'), animations: 'disabled' })
+  })
+})
+
 test('native literature search restores terminal identities and preserves selection and details without imports', { annotation: previewConsumption('viewer-literature_search', 'viewer-literature_search-states', ['loaded']) }, async ({}, testInfo) => {
   await normalUi(testInfo, async () => {
     const writes = []
@@ -4027,7 +5729,7 @@ async function expandNativeOutputs() {
 test('native published outputs preserve filters, file and snapshot sources across reload and appearance', { annotation: previewConsumption('viewer-outputs', 'outputs-published', ['loaded', 'searched', 'filtered', 'collapsed', 'opened', 'reloaded']) }, async ({}, testInfo) => {
   await normalUi(testInfo, async () => {
     await scenario('viewer-outputs', 'outputs-published')
-    await controls.getByRole('button', { name: zh.close, exact: true }).click()
+    await workspaceShortcut('F8')
     await openNativeOutputs()
     await expandNativeOutputs()
     const outputs = product.getByTestId('project-outputs')
@@ -4147,7 +5849,7 @@ async function outputUi(testInfo, sceneId, action) {
   try {
     await normalUi(testInfo, async () => {
       await scenario('viewer-outputs', sceneId)
-      await controls.getByRole('button', { name: zh.close, exact: true }).click()
+      await workspaceShortcut('F8')
       await action(observations)
       expect(observations.recoveries).toEqual(sceneId.endsWith('-failed') ? [200] : [])
     }, expected)
@@ -4163,7 +5865,7 @@ async function recoverNativeOutputs() {
   await controls.getByTestId('preview-artifacts-recover').click()
   expect((await recovering).status()).toBe(200)
   expect(new URL(product.url()).searchParams.get('previewInstance')).toBe(manifest.instance)
-  await controls.getByRole('button', { name: zh.close, exact: true }).click()
+  await workspaceShortcut('F8')
 }
 
 for (const sceneId of ['outputs-pending', 'outputs-history-pending']) {
@@ -4943,8 +6645,8 @@ async function browsingUi(testInfo, action, expectedFailures = []) {
     try {
       await action({ snapshot })
     } finally {
-      const state = await snapshot('/__preview/state')
-      writeFileSync(testInfo.outputPath('browsing-diagnostics.json'), JSON.stringify(state.diagnostics, null, 2))
+      const diagnostics = await controls.evaluate(() => window.pdfe.readDiagnostics())
+      writeFileSync(testInfo.outputPath('browsing-diagnostics.json'), JSON.stringify(diagnostics, null, 2))
     }
     const current = await snapshot('/__preview/state')
     expect(current.projects).toEqual(original.projects)
@@ -5146,6 +6848,39 @@ test('native resource pagination failure preserves its first page and supports d
     await expect(more).not.toBeVisible()
     await product.screenshot({ path: testInfo.outputPath('browsing-dark-keyboard-recovered.png') })
   }, [{ path: '/api/content/projects/' + PREVIEW_PROJECT_ID + '/tree', method: 'GET', status: 503 }])
+
+})
+
+test('native diagnostics show the failed and retried pagination request without exposing filenames', { annotation: [
+  { type: INITIAL_TARGET_ANNOTATION, description: JSON.stringify({ pageId: 'viewer-explorer', sceneId: 'browsing-more-failed' }) },
+] }, async ({}, testInfo) => {
+  await useDarkEnglishAppearance()
+  await browsingOpen('explorer')
+  await expect(browsingNodes()).toHaveCount(PREVIEW_BROWSING.pageSize)
+  const more = product.getByTestId('explorer-more-/')
+  const failed = browsingResponse('explorer', PREVIEW_BROWSING.pageSize)
+  await more.click()
+  expect((await failed).status()).toBe(503)
+  await expect(product.getByTestId('explorer-more-error-/')).toBeVisible()
+  const recovered = browsingResponse('explorer', PREVIEW_BROWSING.pageSize)
+  await more.press('Enter')
+  expect((await recovered).status()).toBe(200)
+  await expect(product.getByTestId('explorer-more-error-/')).not.toBeVisible()
+  const window = await app.browserWindow(product)
+  await window.evaluate((window, minimum) => window.setSize(minimum.width, minimum.height), WORKSPACE_WINDOW_MINIMUM)
+  await openRequests(en)
+  const details = await diagnosticDetails(/projects\/:projectId\/tree.*503/s, en)
+  await expect(details).toContainText(en.diagnosticHttpFailed)
+  await expect(details).toContainText(PREVIEW_BROWSING.moreFailure)
+  await expect(details.getByText(String(PREVIEW_BROWSING.pageSize), { exact: true })).toBeVisible()
+  const snapshot = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  const pagination = snapshot.requests.filter(record => record.path.endsWith('/:projectId/tree') && record.parameters.fields?.offset === PREVIEW_BROWSING.pageSize)
+  expect(pagination.map(record => record.status)).toEqual([503, 200])
+  expect(JSON.stringify(pagination)).not.toContain(PREVIEW_BROWSING.seed.prefix)
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-pagination-failure.png'), animations: 'disabled' })
+  await details.getByRole('button', { name: en.diagnosticBack, exact: true }).click()
+  await diagnosticDetails(/projects\/:projectId\/tree.*200/s, en)
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-pagination-retry.png'), animations: 'disabled' })
 })
 
 for (const action of ['complete', 'refresh', 'remount']) {
@@ -5199,6 +6934,8 @@ function nativeLiteratureResponse(path = LITERATURE_PATH, method = 'GET') {
 }
 
 async function useDarkEnglishAppearance() {
+  const settings = controls.getByTestId('preview-settings-toggle')
+  if (await settings.getAttribute('aria-expanded') === 'false') await settings.click()
   for (const [label, option] of [[zh.theme, zh.dark], [zh.language, zh.english]]) {
     await controls.getByRole('combobox', { name: label, exact: true }).click()
     await Promise.all([
@@ -5745,6 +7482,21 @@ test('native project creation preserves failed form input and retries successful
   await expect(product.getByTestId('home-project-' + name)).toHaveCount(1)
   expect(await projects()).toEqual(completed)
   await product.screenshot({ path: testInfo.outputPath('pdfe-native-project-retried.png') })
+  await openRequests()
+  const detail = await diagnosticDetails(/POST \/api\/content\/projects.*202/s)
+  await expect(detail).toContainText(zh.diagnosticNameLength)
+  await expect(detail).not.toContainText(name)
+  const diagnostics = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  const createdOps = diagnostics.requests.filter(request => request.method === 'POST' && request.path === '/api/content/projects')
+  expect(createdOps).toHaveLength(2)
+  for (const [index, state] of ['failed', 'succeeded'].entries()) {
+    expect(diagnostics.requests).toEqual(expect.arrayContaining([expect.objectContaining({
+      path: '/api/content/operations/:operationId',
+      parameters: expect.objectContaining({ fields: expect.objectContaining({ operation: createdOps[index].response.fields.operation }) }),
+      response: expect.objectContaining({ fields: expect.objectContaining({ state }) }),
+    })]))
+  }
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-project-accepted.png'), animations: 'disabled' })
 })
 
 test('native project center consumes every declared data policy through workbench navigation', async ({}, testInfo) => {
@@ -5911,7 +7663,7 @@ test('native project center distinguishes task loading, read failure and success
   await expect(tasks).toHaveCount(1)
   await expect(center.getByRole('status').filter({ hasText: '无法读取任务，请重试' })).toHaveCount(0)
   await product.screenshot({ path: testInfo.outputPath('native-task-read-recovered.png') })
-  await reloadCenter(() => controls.getByRole('button', { name: zh.reset, exact: true }).click())
+  await reloadCenter(() => replayCurrentScenario())
   await expect(center.getByRole('status').filter({ hasText: '无法读取任务，请重试' })).toBeVisible()
   } finally {
     writeFileSync(testInfo.outputPath('task-read-responses.json'), JSON.stringify(responses, null, 2))
@@ -5953,9 +7705,10 @@ test('native project catalog loading and persistent failure recover through real
     await Promise.all([
       product.waitForEvent('framenavigated', frame => frame === product.mainFrame()),
       controls.waitForEvent('framenavigated', frame => frame === controls.mainFrame()),
-      controls.getByRole('button', { name: zh.reset, exact: true }).click(),
+      replayCurrentScenario(),
     ])
     await expect(product.getByRole('button', { name: '重新加载', exact: true })).toBeVisible()
+    await controls.getByTestId('preview-settings-toggle').click()
     await controls.getByRole('combobox', { name: zh.language, exact: true }).click()
     await Promise.all([
       product.waitForEvent('framenavigated', frame => frame === product.mainFrame()),
@@ -6077,7 +7830,7 @@ test('native project center creates from empty, edits, pins and archives across 
   await reloadCenter(() => controls.getByRole('button', { name: zh.reload, exact: true }).click())
   await expect(product.getByTestId('home-project-' + createdName)).toBeVisible()
   expect((await snapshot()).projects).toEqual(created.projects)
-  await reloadCenter(() => controls.getByRole('button', { name: zh.reset, exact: true }).click())
+  await reloadCenter(() => replayCurrentScenario())
   await expect(product.getByTestId('home-projects-empty')).toBeVisible()
   await expectHomeTasksHidden()
   expect((await snapshot()).projects).toHaveLength(0)
@@ -6128,6 +7881,7 @@ test('native project center creates from empty, edits, pins and archives across 
 })
 
 test('native credits report explicit unavailability while preserving simulated login', async ({}, testInfo) => {
+  await controls.getByTestId('preview-settings-toggle').click()
   const login = controls.getByRole('combobox', { name: zh.loginState, exact: true })
   await expect(login).toBeEnabled()
   await login.click()
@@ -6142,15 +7896,34 @@ test('native credits report explicit unavailability while preserving simulated l
   await expect(product.getByTestId('account-menu-name')).toContainText('模拟协作账号')
   await expect(product.getByTestId('account-menu-credits-value')).toHaveText('--')
   await product.screenshot({ animations: 'disabled', path: testInfo.outputPath('native-credits-unavailable.png') })
-  await controls.getByRole('button', { name: zh.tools, exact: true }).click()
-  await controls.getByRole('button', { name: zh.refresh, exact: true }).click()
-  const history = controls.getByTestId('preview-diagnostic-history')
-  await expect(history).toBeVisible()
-  const diagnostics = JSON.parse(await history.innerText())
+  await openRequests()
+  const history = await diagnosticDetails(/\/api\/account\/credits.*503/s)
+  const diagnostics = await controls.evaluate(() => window.pdfe.readDiagnostics())
   expect(diagnostics.requests).toEqual(expect.arrayContaining([expect.objectContaining({ path: '/api/account/credits', status: 503, outcome: 'completed' })]))
   await history.scrollIntoViewIfNeeded()
   await controls.screenshot({ animations: 'disabled', path: testInfo.outputPath('native-credits-diagnostics.png') })
   writeFileSync(testInfo.outputPath('native-credits-diagnostics.json'), JSON.stringify(diagnostics, null, 2))
+})
+
+test('native account appearance menu switches themes above language', async ({}, testInfo) => {
+  await scenario('page-home', 'home-no-tasks')
+  await product.getByTestId('activity-account').click()
+  const appearance = product.getByTestId('account-menu-appearance')
+  const language = product.getByTestId('account-menu-language')
+  expect((await appearance.boundingBox()).y).toBeLessThan((await language.boundingBox()).y)
+  for (const [label, theme] of [['深色', 'dark'], ['系统', 'system'], ['浅色', 'light']]) {
+    await appearance.click()
+    await product.getByRole('menuitemradio', { name: label, exact: true }).click()
+    const expected = theme === 'system'
+      ? await product.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme
+    await expect(product.locator('html')).toHaveAttribute('data-theme', expected)
+    await appearance.click()
+    await expect(product.getByRole('menuitemradio', { name: label, exact: true })).toHaveAttribute('aria-checked', 'true')
+    await product.screenshot({ path: testInfo.outputPath('appearance-' + theme + '.png') })
+    await product.keyboard.press('ArrowLeft')
+  }
+  await product.keyboard.press('Escape')
 })
 
 test('native project center records appearance under normal host conditions', { timeout: 120_000 }, async ({}, testInfo) => {
@@ -6192,6 +7965,7 @@ test('native project center records appearance under normal host conditions', { 
 test('native project center follows host theme notifications without reloading either document', async ({}, testInfo) => {
   const errors = []
   for (const page of [product, controls]) page.on('pageerror', error => errors.push(error.message))
+  await controls.getByTestId('preview-settings-toggle').click()
   await controls.getByRole('combobox', { name: zh.theme, exact: true }).click()
   await reloadCenter(() => controls.getByRole('option', { name: zh.system, exact: true }).click())
   await controls.getByRole('searchbox').fill('home-no-tasks')
@@ -6231,12 +8005,21 @@ test('native project center retains global login, theme and language through nav
     return response.json()
   }
   let dictionary = zh
+  const settings = controls.getByTestId('preview-settings-toggle')
   const choose = async (label, option) => {
     await controls.getByRole('combobox', { name: label, exact: true }).click()
     await reloadCenter(() => controls.getByRole('option', { name: option, exact: true }).click())
+    await expect(settings).toHaveAttribute('aria-expanded', 'true')
   }
   const observations = []
   await scenario('page-home', 'home-no-tasks')
+  await expect(settings).toHaveAttribute('aria-expanded', 'false')
+  await expect(settings).toContainText(zh.mockLoggedIn)
+  await expect(controls.getByRole('group', { name: zh.publicControls })).toBeHidden()
+  await controls.screenshot({ path: testInfo.outputPath('preview-settings-collapsed.png') })
+  await settings.press('Enter')
+  await expect(settings).toHaveAttribute('aria-expanded', 'true')
+  await controls.screenshot({ path: testInfo.outputPath('preview-settings-expanded.png') })
   const original = await snapshot()
   for (const combination of [
     { login: 'anonymous', theme: 'dark', language: 'en' },
@@ -6418,17 +8201,16 @@ test('native conversation diagnostics preserve two-turn history and reset saniti
     }
     await workspaceShortcut('F8')
     const diagnostics = async filename => {
-      await controls.getByRole('button', { name: zh.tools, exact: true }).click()
-      await controls.getByRole('button', { name: zh.refresh, exact: true }).click()
+      await openRequests()
       const output = controls.getByTestId('preview-diagnostic-history')
       await expect(output).toBeVisible()
-      const serialized = await output.innerText()
-      const value = JSON.parse(serialized)
-      expect(value).toMatchObject({ requests: expect.any(Array), events: expect.any(Array), files: expect.any(Array) })
+      const value = await controls.evaluate(() => window.pdfe.readDiagnostics())
+      const serialized = JSON.stringify(value)
+      expect(value).toMatchObject({ requests: expect.any(Array), streams: expect.any(Array) })
       expect(value.requests.every(request => !request.path.includes('?'))).toBe(true)
       for (const question of questions) expect(serialized).not.toContain(question)
       for (const request of value.requests.filter(request => request.method === 'POST' && request.path.endsWith('/turns'))) {
-        expect(Object.keys(request).sort()).toEqual(['durationMs', 'method', 'outcome', 'path', 'sequence', 'status'])
+        expect(request.body).toEqual({ state: 'omitted' })
         expect(request).toMatchObject({ status: 200, outcome: 'completed' })
         expect(request.durationMs).toBeGreaterThanOrEqual(0)
       }
@@ -6457,7 +8239,7 @@ test('native conversation diagnostics preserve two-turn history and reset saniti
     await Promise.all([
       product.waitForEvent('framenavigated', frame => frame === product.mainFrame()),
       controls.waitForEvent('framenavigated', frame => frame === controls.mainFrame()),
-      controls.getByRole('button', { name: zh.reset, exact: true }).click(),
+      replayCurrentScenario(),
     ])
     await expect(product.getByTestId('composer-input')).toBeVisible()
     await expect(product.getByTestId('user-bubble')).toHaveCount(0)
@@ -6539,6 +8321,32 @@ test('native long stream cancellation persists its interrupted answer through ac
     expect(observation.interruptions).toBe(2)
     await product.screenshot({ path: testInfo.outputPath('conversation-cancelled-reloaded.png') })
   })
+})
+
+test('native diagnostics link interrupted and reconnected conversation streams to the actual cursor', async ({}, testInfo) => {
+  await scenario('page-conversation', 'conversation-recovery')
+  const question = '模拟断流后核对诊断关联'
+  const first = await conversationSend(question)
+  await expect(product.getByTestId('turn-recoverable-notice')).toContainText(conversationZh.failure.interrupted.message)
+  const reconnected = product.waitForRequest(request => {
+    const url = new URL(request.url())
+    return url.pathname === '/api/serve/sessions/' + first.sessionId + '/events' &&
+      Number(url.searchParams.get('from_seq')) > 0
+  })
+  await product.getByTestId('turn-continue').click()
+  const cursor = Number(new URL((await reconnected).url()).searchParams.get('from_seq'))
+  await expect(product.locator('.answer-annotation-root').filter({ hasText: CONVERSATION_EXPECTED.answer })).toBeVisible()
+  await expect(product.getByTestId('composer-stop')).not.toBeVisible()
+  await openRequests()
+  await controls.getByRole('tab', { name: zh.diagnosticSse, exact: true }).click()
+  const snapshot = await controls.evaluate(() => window.pdfe.readDiagnostics())
+  const reconnect = snapshot.streams.find(record => record.kind === 'session' && record.cursor === cursor && record.reconnectOf !== undefined)
+  expect(reconnect).toMatchObject({ phase: 'open', cursor })
+  expect(snapshot.streams).toEqual(expect.arrayContaining([expect.objectContaining({ connection: reconnect.reconnectOf, phase: 'interrupted' })]))
+  expect(JSON.stringify(snapshot)).not.toContain(question)
+  await controls.getByTestId('preview-diagnostic-history').getByRole('button').filter({ hasText: zh.diagnosticConnection.replace('{{id}}', String(reconnect.connection)) }).filter({ hasText: zh.diagnosticOpen }).first().click()
+  await expect(controls.getByTestId('preview-diagnostic-detail')).toContainText(zh.diagnosticReconnect.replace('{{id}}', String(reconnect.reconnectOf)))
+  await controls.screenshot({ path: testInfo.outputPath('diagnostic-session-reconnect.png'), animations: 'disabled' })
 })
 
 test('native failed conversation resumes its closed stream without duplicate turns or answers', { annotation: previewConsumption('page-conversation', 'conversation-recovery', ['disconnected', 'reconnecting', 'failed', 'recovered']) }, async ({}, testInfo) => {
@@ -7010,7 +8818,7 @@ test('native shared queue extraction retains the original Composer keyboard subm
     await product.screenshot({ path: testInfo.outputPath('composer-admitted-once.png') })
     await workspaceShortcut('F8')
     await scenario('page-conversation', 'conversation-cancel')
-    await controls.getByRole('button', { name: zh.close, exact: true }).click()
+    await workspaceShortcut('F8')
     await product.getByTestId('composer-input').fill('检查共享队列展示层接入后的原输入框')
     const sending = product.waitForResponse(response => /\/api\/serve\/sessions\/[^/]+\/turns$/.test(new URL(response.url()).pathname) && response.request().method() === 'POST')
     await product.getByTestId('composer-send').focus()

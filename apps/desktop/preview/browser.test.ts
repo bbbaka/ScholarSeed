@@ -6,6 +6,21 @@ import { PREVIEW_BROWSER, PreviewBrowser, type PreviewBrowserPolicy } from './br
 const QUERY = { kind: 'query', query: { offset: 0, limit: 20 } } as const
 const ORIGIN = 'https://research.example.org'
 
+test('paper PDF mock allows only the first original and valid source pages', async () => {
+  const owner = new PreviewBrowser({ seed: 'empty', surface: { seed: 'empty', paperPdf: true } })
+  for (const page of [1, 4, 6]) {
+    const url = `${PREVIEW_BROWSER.paperPdf}#page=${page}`
+    const snapshot = surface(await owner.commandRequest({ kind: 'open', input: url }))
+    assert.equal(snapshot.engine, 'chromium-sidecar')
+    assert.equal(snapshot.tabs.at(-1)?.url, url)
+  }
+  for (const input of ['https://example.org/test.pdf', `${PREVIEW_BROWSER.paperPdf}#page=0`, `${PREVIEW_BROWSER.paperPdf}#page=29`, `${PREVIEW_BROWSER.paperPdf}?other=1`]) {
+    assert.deepEqual(await owner.commandRequest({ kind: 'open', input }), { ok: false, error: BROWSER_ERROR.permissionDenied })
+  }
+  const ordinary = new PreviewBrowser({ seed: 'empty', surface: { seed: 'empty' } })
+  assert.deepEqual(await ordinary.commandRequest({ kind: 'open', input: PREVIEW_BROWSER.paperPdf }), { ok: false, error: BROWSER_ERROR.permissionDenied })
+})
+
 function surface(reply: BrowserReply): BrowserSnapshot {
   assert.ok(reply.ok)
   return reply.snapshot

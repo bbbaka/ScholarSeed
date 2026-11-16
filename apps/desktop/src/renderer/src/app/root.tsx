@@ -26,6 +26,7 @@ import { DocumentWorkspaceContext, documentWorkspaces } from '../features/workbe
 import { installRendererDiagnostics } from '../diagnostics'
 import { assistantProject, StoreProvider, useApp } from '../store'
 import { NavigationRecoveryContext } from '../contracts/navigation'
+import { ScheduleCreationProvider } from '../features/schedules/Creation'
 import { CanvasProvider } from '../features/canvas/Scope'
 
 function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
@@ -67,7 +68,11 @@ export function RendererProviders({ children }: { children: React.ReactNode }): 
                       >
                         <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
                           <AnswerCopyContext.Provider value={copyAnswer}>
-                            <CanvasProvider>{children}</CanvasProvider>
+                            <CanvasProvider>
+                              <ScheduleCreationProvider sources={featureRegistry.assistantSources}>
+                                {children}
+                              </ScheduleCreationProvider>
+                            </CanvasProvider>
                           </AnswerCopyContext.Provider>
                         </InteractionPolicyProvider>
                       </DisplayCardProvider>

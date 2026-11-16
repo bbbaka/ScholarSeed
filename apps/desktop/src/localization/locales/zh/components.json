@@ -548,6 +548,7 @@
     "openSettings": "打开设置"
   },
   "accountMenu": {
+    "system": "系统",
     "unlimited": "不限",
     "avatar": "{{name}} 的头像",
     "profile": "个人信息",
@@ -1189,7 +1190,8 @@
       "storage": "数据存储",
       "archives": "归档管理",
       "about": "关于书深",
-      "prompts": "AI 提示词"
+      "prompts": "AI 提示词",
+      "memory": "记忆"
     },
     "archives": {
       "title": "归档管理",

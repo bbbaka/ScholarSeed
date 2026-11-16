@@ -34,6 +34,8 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 | `preview.literature-results` | 完整结果、筛选、分页与来源 | 从检索摘要打开详情，可选择论文、查看来源或加入文献库。 | [Details.tsx:35](../../apps/desktop/src/renderer/src/features/literature/Details.tsx#L35) |
 | `literature.selection` | 论文子集选择 | 兼容已有文献流程；用户勾选后返回论文 ID 列表。 | [Choices.tsx:19](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19) |
 | `literature.authorization` | 全文授权涉及的论文 | 通过文献授权流程展示，用户确认后才获取全文。 | [Choices.tsx:19](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19) |
+| `display.literature-downloads` | 逐篇获取或入库结果 | 在获取或入库结束后展示，可打开全文或进入文献库。 | [Downloads.tsx:16](../../apps/desktop/src/renderer/src/features/literature/Downloads.tsx#L16) |
+| `display.literature-delivery` | 保存位置、文件冲突与保存结果 | 通过 `literature delivery` 发起，由用户选择保存目标并确认。 | [Delivery.tsx:74](../../apps/desktop/src/renderer/src/features/literature/Delivery.tsx#L74) |
 | `display.literature-references` | 引用列表与来源操作 | 展示正文引用的文献，可打开来源、入库或设置分类。 | [References.tsx:131](../../apps/desktop/src/renderer/src/features/literature/References.tsx#L131) |
 
 描述符引用公共组件时设置 `public: true`，指定 slot 和场景文件，不提供 entry。实际数据和动作以[组件目录](api.zh.md#查询组件与-slot)为准。
@@ -53,6 +55,8 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 const VIEWS = {
   'display.literature-search': LiteratureResults,
   'display.literature-references': LiteratureReferences,
+  'display.literature-downloads': LiteratureDownloads,
+  'display.literature-delivery': LiteratureDeliveryCard,
   'preview.literature-results': LiteratureDetails,
 };
 const CHOICES = ['interaction.question', 'literature.authorization'];
@@ -98,27 +102,29 @@ const LEGACY_SELECTION = 'literature.selection';
 
 ### 全文授权与获取结果
 
-`literature.authorization` 展示本次全文授权涉及的论文。托管获取仅用于获授权的阅读，不写入文献库或另存用户文件。
+`literature.authorization` 展示本次全文授权涉及的论文；按钮和授权结果由书深原生流程处理。`display.literature-downloads` 显示逐篇结果。示例分别来自 [literature-review/components/authorization.json](../../skills/community/literature-review/components/authorization.json) 与 [precise-literature-search/components/downloads.json](../../skills/community/precise-literature-search/components/downloads.json)。论文子集样例在同目录 `scenario.json`。
 
 ![literature.authorization 的授权范围组件预览](../assets/plugins/cards/literature.authorization.png)
 
+![display.literature-downloads 的获取结果组件预览](../assets/plugins/cards/display.literature-downloads.png)
 
 ### 保存交付与引用
 
-科研结果保留添加到文献库、仅添加元信息和 BibTeX 导出。引用入口仍打开实际来源。
+`display.literature-delivery` 收集保存目标和相关选择；`display.literature-references` 显示引用列表及来源操作。示例分别来自 [precise-literature-search/components/delivery.json](../../skills/community/precise-literature-search/components/delivery.json) 与 [research-idea-partner/components/references.json](../../skills/community/research-idea-partner/components/references.json)。
 
+![display.literature-delivery 的保存交付组件预览](../assets/plugins/cards/display.literature-delivery.png)
 
 ![display.literature-references 的引用组件预览](../assets/plugins/cards/display.literature-references.png)
 
 ## 统一技能与组合 slot
 
-Agent 通过 `scholarseed-product-operations` 按需加载对话卡片指南，发现当前官方 UI，并读取三类 reference。资料位于当前仓库的 `skills/community/scholarseed-product-operations/`，入口为 `references/scholarseed-chat-ui/guides/conversation.md`。原三个独立对话技能已经并入此技能，不再分别安装。
+Agent 通过 `scholarseed-product-operations` 按需加载对话卡片指南，发现当前官方 UI，并读取三类 reference。资料位于当前仓库的 `skills/community/scholarseed-product-operations/`，入口为 `references/conversation.md`。原三个独立对话技能已经并入此技能，不再分别安装。
 
 | 当前组合 slot | 用途 | 数据契约与示例 |
 | --- | --- | --- |
-| `rich-content.compose` | 图表、表格、公式、流程图、代码与正文 | `references/scholarseed-chat-ui/guides/content.md` |
-| `research-evidence.select` | 完整证据、来源定位与用户选择 | `references/scholarseed-chat-ui/guides/evidence.md` |
-| `artifacts-workbench.preview` | 文件路径、版本及已提供内容的预览 | `references/scholarseed-chat-ui/guides/workbench.md` |
+| `rich-content.compose` | 图表、表格、公式、流程图、代码与正文 | `references/content.md` |
+| `research-evidence.select` | 完整证据、来源定位与用户选择 | `references/evidence.md` |
+| `artifacts-workbench.preview` | 文件路径、版本及已提供内容的预览 | `references/workbench.md` |
 
 已有组合能表达需求时只提供符合 schema 的 JSON，不重新生成插件。组合之外的新交互由 `plugin-create` 创建、检查和发布，再由用户确认安装。公共领域 slot 仍走领域工具；不得把任意 `Conversation` 导出当作可直接调用的 slot。
 
@@ -130,13 +136,12 @@ Agent 通过 `scholarseed-product-operations` 按需加载对话卡片指南，�
 
 | 类别 | 当前导出 | 开发者负责什么 |
 | --- | --- | --- |
-| 正文与富内容 | `Markdown`、`Code`、`Formula`、`Tabulation`、`Diagram`、`Canvas`、`Content` | 原始内容及受控复制/打开回调；显示代码或图形不等于执行代码；图片共享实现保留在原生宿主，Markdown 多图接入另行规划 |
+| 正文与富内容 | `Markdown`、`Message`、`Code`、`Formula`、`Tabulation`、`Diagram`、`Canvas`、`Lean`、`Content`、`ImageView`、`Images`、`ImageThumbnail` | 原始内容、受控复制/打开回调和授权 URL；显示代码或图形不等于执行代码 |
 | 图表与数据表 | `Plot`、`BarChart`、`GroupedBarChart`、`StackedBarChart`、`LineChart`、`ScatterChart`、`PieChart`、`DonutChart`、`Histogram`、`BoxPlot`、`Heatmap`、`DataTable` | 明确数据列、单位、缺失值与来源；复用官方 ECharts/TanStack 能力，不传任意可执行配置 |
+| 对话、确认与执行 | `Choices`、`Suggestions`、`Plan`、`Failure`、`EmptyAnswer`、`ExecutionProcess`、`ExecutionBatch`、`ToolExecution`、`ExecutionIO`、`ExecutionStatus`、`WebSearchRecord` | 真实问题、轮次、状态与操作回执；不能把未知或中断表示为成功 |
 | 科研结果 | `Results`、`Details`、`References`、`Downloads`、`Delivery`、`Review` | 真实业务数据与领域操作端口；通常接收 `content` 与 `ports` |
-| 引用与证据 | `CitationLink`、`CitationSources` | 完整摘录、来源定位、历史快照与跳转；前端标签不是读取权限 |
-| 产物与工作台 | `FileFormatIcon`、`Artifact`、`ArtifactGroup`、`ArtifactMenuItems`、`FileMenuItems`、`ArtifactDestination` | 不可变文件/版本身份、保存/导入/打开结果；图标、分组与菜单不是新业务卡片 |
-
-用户输入与上下文、处理过程与计划、确认与澄清、下一步建议、异常与空回答均使用书深原生 UI，不提供对应的官方 UI 导出或 iframe 入口。`interaction.question`、`literature.authorization` 保留宿主原生贡献；正文和产物共享的图片、菜单及组件自身的失败处理继续保留。
+| 引用、证据与上下文 | `CitationLink`、`WebCitationLink`、`CitationSources`、`ConversationReference`、`SelectionReference`、`ComposerRefChip`、`EvidenceSelection` | 完整摘录、来源定位、历史快照与跳转；前端标签不是读取权限 |
+| 附件、产物与工作台 | `Attachments`、`FileFormatIcon`、`Artifact`、`ArtifactGroup`、`ArtifactMenuItems`、`FileMenuItems`、`ArtifactDestination`、`ArtifactPreview` | 不可变文件/版本身份、保存/导入/打开结果；图标、分组与菜单不是新业务卡片 |
 
 输入提示见 `catalog.composition.Conversation`，精确类型见[源码与类型](api.zh.md#源码与类型)。导出组件不表示其所有书深内部回调都向普通插件开放。
 
@@ -145,10 +150,10 @@ Agent 通过 `scholarseed-product-operations` 按需加载对话卡片指南，�
 在当前仓库安装 Desktop 前端依赖后运行：
 
 ```sh
-pnpm ops dev browser
+node packages/ui/preview.cjs
 ```
 
-通过渲染器的回环地址打开 [Desktop 组件预览页](http://localhost:5173/?dev=components)。
+打开终端输出的回环地址。这是唯一组件实时预览入口，直接引用官方源码；修改组件后自动更新，无需生成新的预览代码。目录自动发现当前导出，按上述六类组织，图表按具体类型分别展示。当前 56 个导出合并为 55 个入口，其中 `ArtifactMenuItems` 与 `FileMenuItems` 为同一组件的别名。
 
 Schema 规则支持种子随机数据及 JSON 编辑；随机材料只是预览数据，不能冒充真实文献、保存结果或权限。新增组件会自动发现，但仍需补齐可编辑数据契约及必要的安全交互绑定。该网页不调用真实业务，不能替代书深应用中的安装、复制或 Agent 链路验收；文档截图也不是实时预览。
 

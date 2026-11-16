@@ -4,14 +4,18 @@ export const MAIN_VIEWS = [
   'projects',
   'resource',
   'literature',
+  'discovery',
   'writing',
   'browser',
   'skills',
+  'schedules',
 ] as const
 export type MainView = (typeof MAIN_VIEWS)[number]
+export const PROJECT_PAGE_VIEWS: readonly MainView[] = ['schedules']
 export const NAVIGATION_DIAGNOSTIC_PREFIX = '[navigation]'
 
 export const SETTINGS_PAGES = [
+  'memory',
   'general',
   'translation',
   'prompts',

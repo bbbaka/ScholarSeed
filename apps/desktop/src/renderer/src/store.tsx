@@ -53,7 +53,7 @@ import { flushSync } from 'react-dom'
 import type { AccountSettingsPage, BrowserSettingsSection, MainView } from '../../navigation'
 import { NavigationRecoveryContext, WebNavigationContext } from './contracts/navigation'
 import { openWebPage, webPageErrorKey } from './app/links'
-import { HOME_LOCATION, NAVIGATION_DIAGNOSTIC_PREFIX } from '../../navigation'
+import { HOME_LOCATION, NAVIGATION_DIAGNOSTIC_PREFIX, PROJECT_PAGE_VIEWS } from '../../navigation'
 import {
   captureNavigationLocation,
   resolveNavigationLocation,
@@ -619,7 +619,9 @@ export interface AppState {
   tension: 'open' | 'hypothesis' | 'ignored'
   thread: 'open' | 'folded'
   confirmDelete: {
+    onRemoved?: () => void
     label: string
+    description?: React.ReactNode
     title_fallback?: SessionTitleFallback
     sessionId?: string
     surface?: SessionSurface
@@ -1156,6 +1158,7 @@ const ASSISTANT_FALLBACK_VIEW: MainView = 'resource'
 
 function assistantSessionView(current: AppState, projectId?: string | null): MainView {
   if (projectId) return ASSISTANT_FALLBACK_VIEW
+  if (PROJECT_PAGE_VIEWS.includes(current.mainView)) return ASSISTANT_FALLBACK_VIEW
   return current.mainView === 'home' || current.mainView === 'conversation'
     ? ASSISTANT_FALLBACK_VIEW
     : current.mainView
@@ -1405,6 +1408,7 @@ export interface Actions extends AssistantIngress {
       returnProjectId?: string
       browserPageId?: string
       browserPageOwned?: boolean
+      navigationView?: 'resource' | 'literature' | 'discovery'
       preserveLayout?: boolean
     }
   ) => void
@@ -3615,6 +3619,7 @@ export function StoreProvider({
                         : template.id),
                     browserPageId: options?.browserPageId,
                     browserPageOwned: options?.browserPageOwned,
+                    navigationView: options?.navigationView ?? existingBrowser?.navigationView,
                   }
                 : template
             const tabs = fixed ? openFixedTab(current.tabs, fixed) : current.tabs
@@ -3633,7 +3638,8 @@ export function StoreProvider({
             if (workspace.getSnapshot().tabs[activeTab]) workspace.focusTab(activeTab)
             const leavesProjectScope =
               view === 'home' ||
-              ((view === 'skills' || view === 'literature') && !options?.preserveProject)
+              ((view === 'skills' || view === 'literature' || view === 'discovery') &&
+                !options?.preserveProject)
             if (leavesProjectScope) rememberScopeConversation(current)
             const targetProjectId = leavesProjectScope ? null : current.homeSelectedProjectId
             const changesAssistantScope = assistantProject(current).projectId !== targetProjectId
@@ -3645,7 +3651,7 @@ export function StoreProvider({
               ...SURFACE_RESET,
               ...(changesAssistantScope ? assistantScopeReset(current) : {}),
               homeProjectMenuOpen: false,
-              mainView: view,
+              mainView: fixed?.kind === 'browser' ? (fixed.navigationView ?? view) : view,
               workbenchReturnProjectId: options?.returnProjectId ?? null,
               ...(view === 'browser' && !options?.preserveLayout
                 ? {
@@ -3664,7 +3670,7 @@ export function StoreProvider({
                     homeProjectLocked: false,
                   }
                 : {}),
-              modulePanelOpen: view === 'browser' ? current.modulePanelOpen : true,
+              modulePanelOpen: view === 'browser' ? current.modulePanelOpen : view !== 'discovery',
               tabs,
               activeTab,
             }
@@ -6253,14 +6259,20 @@ export function StoreProvider({
         setState(
           (current) => {
             const tab = literatureSearchTab(task.id, task.query, current.homeSelectedProjectId)
+            const view = current.mainView === 'discovery' ? 'discovery' : 'literature'
+            const tabs = openLiteratureSearchTabs(current.tabs, [
+              { ...task, projectId: current.homeSelectedProjectId },
+            ]).map((entry) =>
+              entry.id === tab.id
+                ? { ...entry, navigationView: view as 'discovery' | 'literature' }
+                : entry
+            )
             return {
               ...current,
               homeProjectLocked: false,
               workbenchReturnProjectId: null,
-              mainView: 'literature',
-              tabs: openLiteratureSearchTabs(current.tabs, [
-                { ...task, projectId: current.homeSelectedProjectId },
-              ]),
+              mainView: view,
+              tabs,
               activeTab: tab.id,
               // A fullscreen (cover) assistant hides the main column that shows this tab.
               aiPanel: { ...current.aiPanel, cover: false },
@@ -7266,8 +7278,13 @@ export function StoreProvider({
   )
   const navigateWebPage = useCallback(
     (url: string, onOpened?: () => void): void => {
+      const originView = getSnapshot().mainView
       void openWebPage(url, {
         available: availabilityPolicy.routeAvailable('browser'),
+        navigationView:
+          originView === 'literature' || originView === 'resource' || originView === 'discovery'
+            ? originView
+            : undefined,
         dispatch: (command) => window.scholarseed.browser.dispatch(command),
         reveal: (options) => act.openWorkbenchView('browser', options),
       })
@@ -7277,7 +7294,7 @@ export function StoreProvider({
           toast({ title: resourceI18n.t(webPageErrorKey(error)), tone: 'error' })
         })
     },
-    [act, toast, resourceI18n]
+    [act, toast, resourceI18n, getSnapshot]
   )
   return (
     <StoreContext.Provider value={value}>

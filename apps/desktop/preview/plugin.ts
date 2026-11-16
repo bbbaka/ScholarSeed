@@ -3,6 +3,7 @@ import { sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { createPreviewService } from './service.ts'
+import { PREVIEW_DIAGNOSTIC_ACCESS_PLUGIN, type PreviewDiagnosticAuthorize } from './access.ts'
 import { PREVIEW_OFFICE_FRAME_PATH, previewOfficeFrameParameters } from './frames.ts'
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
@@ -86,7 +87,9 @@ export function previewWorkbench(): Plugin {
     configResolved(config) { requirePreviewDevelopment(config.command) },
     transformIndexHtml: { order: 'pre', handler: (html, context) => previewEntryHtml(html, context.filename) },
     configureServer(server) {
-      const service = createPreviewService()
+      const access = server.config.plugins.find(plugin => plugin.name === PREVIEW_DIAGNOSTIC_ACCESS_PLUGIN)
+        ?.api as { authorizeDiagnostics?: PreviewDiagnosticAuthorize } | undefined
+      const service = createPreviewService(access?.authorizeDiagnostics)
       server.httpServer?.once('close', () => service.dispose())
       server.middlewares.use((request, response, next) => {
         if (!previewRequestAllowed(request)) {

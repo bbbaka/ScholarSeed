@@ -16,6 +16,7 @@ import {
 import { ImportDialog } from '../features/resources/ImportDialog'
 import { NodeMenu } from '../features/resources/NodeMenu'
 import { GlobalSearch } from '../features/search/GlobalSearch'
+import { searchIsBlocked, searchShortcut } from '../features/search/keyboard'
 import { HomeOverview } from '../features/home/HomeOverview'
 import { Workbench } from '../features/workbench/Workbench'
 import { DocumentDragProvider } from '../features/workbench/Dragging'
@@ -124,8 +125,18 @@ function renderMainSurface(
  * features/<domain>/ 下由各自负责人维护。
  */
 export function WorkbenchShell(): React.JSX.Element {
-  const { state, act } = useApp()
+  const { state, act, set } = useApp()
   const { t, i18n } = useTranslation('shell')
+  useEffect(() => {
+    const handleSearch = (event: KeyboardEvent) => {
+      if (searchShortcut(event) !== 'project' || !hasProjectScope(state) || searchIsBlocked())
+        return
+      event.preventDefault()
+      set({ globalSearchOpen: true, globalSearchMode: 'all' })
+    }
+    window.addEventListener('keydown', handleSearch)
+    return () => window.removeEventListener('keydown', handleSearch)
+  }, [state, set])
   const page = featureRegistry.panels.find(
     (panel) => panel.slot === 'page' && panel.key === state.mainView
   )

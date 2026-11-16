@@ -550,11 +550,15 @@ test(
     )
     const originalProjects = (await beforeControls.json()).projects
     let dictionary = zh
+    const settings = control.getByTestId('preview-settings-toggle')
+    await expect(settings).toHaveAttribute('aria-expanded', 'false')
+    await settings.click()
     const choose = async (label: string, option: string) => {
       await control.getByRole('combobox', { name: label, exact: true }).click()
       await control.getByRole('option', { name: option, exact: true }).click()
       await expect(control.locator('html')).toHaveAttribute('data-test-reloads', '1')
       await control.reload()
+      await expect(settings).toHaveAttribute('aria-expanded', 'true')
     }
     for (const combination of [
       { login: 'anonymous', theme: 'dark', language: 'en' },

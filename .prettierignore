@@ -9,8 +9,10 @@
 # 旧 Wiki 目录不参与格式化；当前知识文档由 docs:check 负责门禁。
 wiki/
 
-# AI 入口指南含大量代码路径与反引号字面量，由文档门禁检查，不交给 Prettier 改写。
+# AI 入口指南：540 行、含大量代码路径与反引号字面量，且 AGENTS.md 与
+# CLAUDE.md 必须逐字节保持一致（现状 diff 为 0），格式化会破坏这个约束。
 AGENTS.md
+CLAUDE.md
 
 # 本地 AI 协作产物（.gitignore 已忽略，此处防止本地编辑时被改写）
 .ai/

@@ -7,7 +7,14 @@ import { execFileSync } from 'node:child_process'
 import { build } from 'esbuild'
 import { createServer } from 'vite'
 import { PREVIEW_CATALOG } from '../../preview/catalog.ts'
+import { pdfeSceneClipboard } from '../../preview/collaboration.ts'
+import i18next from 'i18next'
+import zh from '../../preview/locales/zh.json' with { type: 'json' }
+import en from '../../preview/locales/en.json' with { type: 'json' }
 import { PREVIEW_ORIGIN } from '../../preview/constants.ts'
+import { createPreviewDiagnosticAccess, PREVIEW_DIAGNOSTIC_ACCESS_PLUGIN } from '../../preview/access.ts'
+import { PDFE_DIAGNOSTIC_ENV, PDFE_RESTART_ENV, PDFE_RESTART_EXIT } from '../../src/pdfe.ts'
+import { PDFE_ITERATION_EDIT_ENV, PDFE_ITERATION_WORKTREE_ENV } from '../../src/iterations.ts'
 
 const require = createRequire(import.meta.url)
 const { acquire } = require('../../../../scripts/shared/lease.cjs')
@@ -20,6 +27,40 @@ const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
 const artifactRoot = path.join(desktop, 'test-results', 'pdfe-native')
 const OS_ENVIRONMENT = /^(PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TMP|TEMP|LANG|LC_.*|SystemRoot|WINDIR|COMSPEC|USERPROFILE|LOCALAPPDATA|APPDATA|DISPLAY|WAYLAND_DISPLAY|XDG_.*|DBUS_SESSION_BUS_ADDRESS)$/i
 export const pdfeEnvironment = (environment = process.env) => Object.fromEntries(Object.entries(environment).filter(([key]) => OS_ENVIRONMENT.test(key)))
+
+export async function createPdfeServer(serverOptions) {
+  const access = createPreviewDiagnosticAccess()
+  const server = await createServer({
+    configFile: path.join(desktop, 'vite.preview.config.ts'),
+    clearScreen: false,
+    server: serverOptions,
+    plugins: [{
+      name: PREVIEW_DIAGNOSTIC_ACCESS_PLUGIN,
+      api: { authorizeDiagnostics: access.authorize },
+    }],
+  })
+  return { server, grantDiagnostics: access.grant }
+}
+
+function pdfeWorktree() {
+  try {
+    const root = fs.realpathSync(path.resolve(desktop, '../..'))
+    const top = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    return fs.realpathSync(top.trimEnd()) === root ? root : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function pdfeLaunchEnvironment(grant, environment, editIterations = false) {
+  const root = pdfeWorktree()
+  return {
+    ...pdfeEnvironment(environment),
+    [PDFE_DIAGNOSTIC_ENV]: grant.secret,
+    ...(root ? { [PDFE_ITERATION_WORKTREE_ENV]: root } : {}),
+    ...(root && editIterations && process.platform === 'darwin' ? { [PDFE_ITERATION_EDIT_ENV]: '1' } : {}),
+  }
+}
 
 async function cachedNativeInputs() {
   const inputs = {}
@@ -47,6 +88,15 @@ export async function buildPdfe(origin = PREVIEW_ORIGIN) {
   }
   fs.writeFileSync(path.join(application, 'package.json'), JSON.stringify({ name: 'scholarseed-pdfe', version: packageJson.version, main: 'main.cjs' }), { mode: 0o600, flag: 'wx' })
   fs.writeFileSync(path.join(application, 'pdfe.json'), JSON.stringify(manifest), { mode: 0o600, flag: 'wx' })
+  const localization = i18next.createInstance()
+  await localization.init({ lng: 'zh', fallbackLng: 'zh', resources: { zh: { translation: zh }, en: { translation: en } } })
+  const clipboard = Object.fromEntries(['zh', 'en'].map(locale => [
+    locale,
+    Object.fromEntries(PREVIEW_CATALOG.flatMap(page => page.scenarios.map(scene => [
+      JSON.stringify([page.id, scene.id]), pdfeSceneClipboard(page, scene, localization.getFixedT(locale))
+    ])))
+  ]))
+  fs.writeFileSync(path.join(application, 'pdfe-clipboard.json'), JSON.stringify(clipboard), { mode: 0o600, flag: 'wx' })
   await build({ entryPoints: [path.join(desktop, 'src/main/pdfe.ts')], outfile: path.join(application, 'main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron', './lease.node', './fonts.node'], sourcemap: true })
   await build({ entryPoints: [path.join(desktop, 'src/preload/pdfe.ts')], outfile: path.join(application, 'preload.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], sourcemap: true })
   const nativeDirectory = path.join(output, 'native')
@@ -58,24 +108,44 @@ export async function buildPdfe(origin = PREVIEW_ORIGIN) {
 }
 
 export async function main(args = process.argv.slice(2)) {
-  if (args.length && (args.length !== 1 || args[0] !== '--build-only')) throw new Error('Usage: pdfe.mjs [--build-only]')
+  if (args.length && (args.length !== 1 || !['--build-only', '--edit-iterations'].includes(args[0])))
+    throw new Error('Usage: pdfe.mjs [--build-only | --edit-iterations]')
   const lease = acquire({ mode: 'read', resources: [path.join(desktop, 'node_modules')] })
   let server
+  let diagnosticGrant
   let releaseAllowed = true
   try {
-    const application = await buildPdfe()
-    if (args[0] === '--build-only') return
-    server = await createServer({ configFile: path.join(desktop, 'vite.preview.config.ts'), clearScreen: false })
+    if (args[0] === '--build-only') {
+      await buildPdfe()
+      return
+    }
+    const runtime = await createPdfeServer()
+    server = runtime.server
     await server.listen()
     const executable = require('electron')
-    try {
-      const result = await launchLong(executable, [application], { cwd: desktop, env: pdfeEnvironment() })
-      releaseAllowed = result.shutdownConfirmed
-    } catch (error) {
-      releaseAllowed = error.shutdownConfirmed !== false
-      throw error
+    while (true) {
+      const application = await buildPdfe()
+      const manifest = JSON.parse(fs.readFileSync(path.join(application, 'pdfe.json'), 'utf8'))
+      diagnosticGrant = runtime.grantDiagnostics(manifest.instance)
+      try {
+        const result = await launchLong(executable, [application], {
+          cwd: desktop,
+          env: { ...pdfeLaunchEnvironment(diagnosticGrant, process.env, args[0] === '--edit-iterations'), [PDFE_RESTART_ENV]: '1' },
+        })
+        releaseAllowed = result.shutdownConfirmed
+        break
+      } catch (error) {
+        if (error.code === 'CHILD_EXIT' && error.exitCode === PDFE_RESTART_EXIT && !error.signal) {
+          diagnosticGrant.revoke()
+          diagnosticGrant = undefined
+          continue
+        }
+        releaseAllowed = error.shutdownConfirmed !== false
+        throw error
+      }
     }
   } finally {
+    diagnosticGrant?.revoke()
     await server?.close()
     if (releaseAllowed) lease.release()
     else console.error('[pdfe] native process shutdown unconfirmed; dependency lease retained')

@@ -9,6 +9,37 @@ import {
   type ConversationDraft,
 } from './draft.ts'
 
+test('template fields remain empty until supplied and never send example hints', () => {
+  const draft = createComposerDraftStore()
+  draft.setTemplate({
+    prefix: '研究：',
+    suffix: '，附引用。',
+    label: '方向',
+    placeholder: '例如材料预测',
+  })
+  assert.equal(draft.getSnapshot(), '研究：，附引用。')
+  draft.fillTemplate('  ')
+  draft.fillTemplate('土壤碳循环')
+  assert.equal(draft.getSnapshot(), '研究：土壤碳循环，附引用。')
+  draft.finishTemplate()
+  assert.equal(draft.getTemplate(), null)
+  assert.equal(draft.getSnapshot(), '研究：土壤碳循环，附引用。')
+})
+
+test('incomplete templates cannot become ordinary drafts and reset clears template state', () => {
+  const draft = createComposerDraftStore()
+  const template = { prefix: '研究：', suffix: '', label: '方向', placeholder: '示例' }
+  draft.setTemplate(template)
+  draft.finishTemplate()
+  assert.notEqual(draft.getTemplate(), null)
+  draft.reset()
+  assert.equal(draft.getTemplate(), null)
+  assert.equal(draft.getSnapshot(), '')
+  draft.setTemplate(template)
+  draft.set('普通问题')
+  assert.equal(draft.getTemplate(), null)
+})
+
 test('composer draft updates notify only draft subscribers', () => {
   const draft = createComposerDraftStore('seed')
   const snapshots: string[] = []
@@ -21,6 +52,23 @@ test('composer draft updates notify only draft subscribers', () => {
   draft.set('ignored after unsubscribe')
 
   assert.deepEqual(snapshots, ['你为什么', '你为什么卡顿'])
+})
+
+test('reselecting a template creates a fresh focus target without retaining an old answer', () => {
+  const draft = createComposerDraftStore()
+  const template = {
+    prefix: 'Topic: ',
+    suffix: '. Cite sources.',
+    label: 'Topic',
+    placeholder: 'Example',
+  }
+  draft.setTemplate(template)
+  const generation = draft.getTemplate()?.generation
+  draft.fillTemplate('Ecology')
+  assert.equal(draft.getTemplate()?.generation, generation)
+  draft.setTemplate(template)
+  assert.notEqual(draft.getTemplate()?.generation, generation)
+  assert.equal(draft.getTemplate()?.value, '')
 })
 
 test('failed submissions restore before any draft typed while sending', () => {

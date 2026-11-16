@@ -96,6 +96,7 @@ from service.chat.service.maintenance import (
     maintain_session_storage,
 )
 from service.chat.service.publication import PublicationService, SessionArtifactStorage
+from service.chat.service.scheduling import ScheduledConversations, ScheduledExecution
 from service.chat.service.search import SearchService
 from service.chat.service.settings import SettingsService
 from service.chat.service.terminals import TurnTerminalReader
@@ -365,6 +366,11 @@ from service.resources.service.recovery import ResourceRecoveryService
 from service.resources.service.retention import ResourceRetentionService
 from service.resources.service.search import OfficialSearchClient, ResourceSearchService
 from service.resources.service.writer import ResourceWriter
+from service.scheduling.api import mount_schedules
+from service.scheduling.model import CARD_TYPE as SCHEDULE_CARD
+from service.scheduling.model import validate_card as validate_schedule_card
+from service.scheduling.service import Scheduler
+from service.scheduling.store import ScheduleStore
 from service.settings.config import (
     CONFIG_SEED_ENV,
     ConfigSeed,
@@ -3848,6 +3854,7 @@ def _compose_app(
     literature_references = LiteratureReferenceService(content)
     cards = CardRegistry()
     cards.register(NEXT_STEPS_CARD, validate_next_steps_card)
+    cards.register(SCHEDULE_CARD, validate_schedule_card)
     cards.register(
         SEARCH_CARD,
         validate_search_card,
@@ -4379,6 +4386,16 @@ def _compose_app(
     # MVP 0.2 六个纵向功能域 + 跨域全局搜索。
     # 注册在鉴权之前, 因此同样受 /api 鉴权保护。
     register_content_routes(app)
+    schedule_store = ScheduleStore(content)
+    mount_schedules(
+        app,
+        schedule_store,
+        Scheduler(
+            schedule_store,
+            ScheduledExecution(schedule_store, app.state.session_service, app.state.turn_service),
+        ),
+        ScheduledConversations(schedule_store, app.state.session_service).open,
+    )
     register_resource_routes(app)
     app.state.resource_search = ResourceSearchService(
         app.state.skill_credentials, activities, OfficialSearchClient()

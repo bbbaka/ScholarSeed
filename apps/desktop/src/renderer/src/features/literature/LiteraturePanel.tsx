@@ -161,7 +161,14 @@ export function LiteraturePanel(): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const projectId = state.homeSelectedProjectId ?? undefined
-  const { query, reload, panelReload, panel, scopedTags: cachedTags } = useCatalogue()
+  const {
+    query,
+    reload,
+    panelReload,
+    panel,
+    showRecommendations,
+    scopedTags: cachedTags,
+  } = useCatalogue()
   const [joinFlash, setJoinFlash] = useState<CreatedCollectionNotice | null>(null)
   useEffect(
     () =>
@@ -344,7 +351,7 @@ export function LiteraturePanel(): React.JSX.Element {
       data-sidebar-view={key}
       variant="ghost"
       size="sm"
-      className={`${LITERATURE_NAV_ROW_CLASS_NAME}${active ? ' is-active' : ''}`}
+      className={`${LITERATURE_NAV_ROW_CLASS_NAME}${active && !showRecommendations ? ' is-active' : ''}`}
       onClick={() => selectLiteratureScope(patch)}
     >
       <span className={LITERATURE_NAV_NAME_CLASS_NAME}>{label}</span>
@@ -410,6 +417,7 @@ export function LiteraturePanel(): React.JSX.Element {
       const childCollections = byParent.get(collection.id) ?? []
       const expanded = expandedCollections.has(collection.id)
       const active =
+        !showRecommendations &&
         query.collection_id?.includes(collection.id) === true &&
         query.project_id === (project?.id ?? projectId)
       return [
@@ -1024,7 +1032,10 @@ export function LiteraturePanel(): React.JSX.Element {
                         ) : (
                           projectTree.flatMap(({ project, byParent }) => {
                             const expanded = expandedProjects.has(project.id)
-                            const active = query.project_id === project.id && !query.collection_id
+                            const active =
+                              !showRecommendations &&
+                              query.project_id === project.id &&
+                              !query.collection_id
                             return [
                               <div
                                 className="lit-project-row group/project relative flex min-w-0 items-center"

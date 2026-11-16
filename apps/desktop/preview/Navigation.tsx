@@ -1,16 +1,19 @@
-import React, { useState } from 'react'
-import { ChevronDown, ChevronRight, Play } from 'lucide-react'
+import React, { useCallback, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Copy, Play } from 'lucide-react'
 import {
   Badge,
   Button,
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
+  CopyButton,
 } from '../src/renderer/src/components/ui'
 import type { PreviewPage, PreviewScenario } from './catalog.ts'
+import type { PdfeIterationManifest } from '../src/iterations.ts'
+import { formatPdfeSceneReference, type PdfeTarget } from '../src/pdfe.ts'
 import { pdfeFeature } from './iterations.ts'
 import { PDFE_PAGE_GROUPS, PDFE_MIN_GROUP_SCENARIOS, pdfeNavigationGroup } from './hierarchy.ts'
-import { pdfeTitle, pdfeNavigationScenarios, type PdfeTranslate } from './collaboration.ts'
+import { pdfeTitle, pdfeFeatureLabels, pdfeNavigationScenarios, type PdfeTranslate } from './collaboration.ts'
 
 const CONTENT_CLASS = '!rounded-none !border-0 !bg-transparent !p-0'
 const ICON_CLASS = 'size-[var(--vds-icon-8)] shrink-0'
@@ -29,6 +32,7 @@ function toggleExpanded(
 }
 
 interface SceneProps {
+  manifest: PdfeIterationManifest | null
   page: PreviewPage
   scenarios: readonly PreviewScenario[]
   activePage: string
@@ -37,9 +41,12 @@ interface SceneProps {
   translate: PdfeTranslate
   stateLabel: (state: string) => string
   onLaunch: (page: PreviewPage, scene: string) => void
+  onCopy?: (target: PdfeTarget) => Promise<void>
+  activeButtonRef: React.RefCallback<HTMLButtonElement>
 }
 
 function ScenarioButtons({
+  manifest,
   page,
   scenarios,
   activePage,
@@ -48,52 +55,96 @@ function ScenarioButtons({
   translate,
   stateLabel,
   onLaunch,
+  onCopy,
+  activeButtonRef,
 }: SceneProps): React.JSX.Element {
   return (
     <>
       {scenarios.map((scenario) => {
-        const feature = pdfeFeature(scenario, page.scenarios)
+        const feature = pdfeFeature(manifest, page, scenario)
         const current = page.id === activePage && scenario.id === scene
         const hintId = 'preview-hint-' + page.id + '-' + scenario.id
+        const titleId = hintId + '-title'
+        const title = pdfeTitle(scenario, translate)
+        const reference = { pageId: page.id, sceneId: scenario.id }
         return (
-          <Button
-            key={scenario.id}
-            aria-label={pdfeTitle(scenario, translate)}
-            aria-describedby={hintId}
-            data-testid={'preview-scene-' + page.id + '-' + scenario.id}
-            aria-current={current ? 'page' : undefined}
-            variant={current ? 'secondary' : 'ghost'}
-            size="content"
-            disabled={pending || !(page.target || page.host)}
-            className="w-full items-start justify-between !whitespace-normal py-[var(--vds-space-2)] text-left"
-            title={translate(current ? 'replayScene' : 'openScene')}
-            onClick={() => onLaunch(page, scenario.id)}
-          >
-            <span className="grid min-w-0 flex-1 grid-cols-1 gap-[var(--vds-space-1)]">
-              <span className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
-                <span>{pdfeTitle(scenario, translate)}</span>
-                {feature && <Badge size="sm" variant="outline" data-testid={'preview-version-' + page.id + '-' + scenario.id} title={feature.id}>{feature.introducedIn === null ? translate('iterationVersionPending') : translate('iterationAddedIn') + ' v' + feature.introducedIn}</Badge>}
-                {current && (
-                  <Badge size="sm" variant="outline">
-                    {translate('current')}
-                  </Badge>
-                )}
+          <div key={scenario.id} className="grid min-w-0">
+            <Button
+              ref={current ? activeButtonRef : undefined}
+              aria-label={title}
+              aria-describedby={hintId}
+              data-testid={'preview-scene-' + page.id + '-' + scenario.id}
+              aria-current={current ? 'page' : undefined}
+              variant={current ? 'secondary' : 'ghost'}
+              size="content"
+              disabled={pending || !(page.target || page.host)}
+              className="col-start-1 row-start-1 w-full items-start self-stretch !whitespace-normal py-[var(--vds-space-2)] pr-[var(--vds-space-10)] text-left"
+              title={translate(current ? 'replayScene' : 'openScene')}
+              onClick={() => onLaunch(page, scenario.id)}
+            >
+              <span className="grid min-w-0 flex-1 grid-cols-1 gap-[var(--vds-space-1)]">
+                <span className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
+                  <span id={titleId}>{title}</span>
+                  {pdfeFeatureLabels(feature, translate).map(label => (
+                    <Badge
+                      key={label.id}
+                      size="sm"
+                      variant="outline"
+                      data-testid={'preview-version-' + page.id + '-' + scenario.id + (label.id === 'added' ? '' : '-' + label.id)}
+                      title={label.summary}
+                    >
+                      {label.text}
+                    </Badge>
+                  ))}
+                  {current && (
+                    <Badge size="sm" variant="outline">
+                      {translate('current')}
+                    </Badge>
+                  )}
+                </span>
+                <span
+                  id={hintId}
+                  data-testid={hintId}
+                  className="text-[length:var(--vds-font-body-lv3)] leading-[var(--vds-lh-body-lv3)] text-[var(--vds-text-secondary)]"
+                >
+                  {translate('canTry')}:{' '}
+                  {(
+                    scenario.capabilityKeys?.map((key) => translate(key)) ?? [
+                      ...new Set(scenario.states.map(stateLabel)),
+                    ]
+                  ).join(' · ')}
+                </span>
               </span>
+            </Button>
+            <div className="pointer-events-none z-[var(--vds-z-local-control)] col-start-1 row-start-1 my-[var(--vds-space-1)] mr-[var(--vds-space-1)] grid justify-self-end self-start">
               <span
-                id={hintId}
-                data-testid={hintId}
-                className="text-[length:var(--vds-font-body-lv3)] leading-[var(--vds-lh-body-lv3)] text-[var(--vds-text-secondary)]"
+                aria-hidden="true"
+                data-testid={'preview-play-scene-' + page.id + '-' + scenario.id}
+                className="grid size-[var(--vds-control-height-sm)] place-items-center"
               >
-                {translate('canTry')}:{' '}
-                {(
-                  scenario.capabilityKeys?.map((key) => translate(key)) ?? [
-                    ...new Set(scenario.states.map(stateLabel)),
-                  ]
-                ).join(' · ')}
+                <Play className={ICON_CLASS} />
               </span>
-            </span>
-            <Play aria-hidden="true" className={ICON_CLASS} />
-          </Button>
+              {onCopy && (page.target || page.host) && (
+                <div className="pointer-events-auto">
+                  <CopyButton
+                    iconOnly
+                    icon={<Copy />}
+                    copiedIcon={<Check />}
+                    variant="ghost"
+                    tooltip
+                    idleLabel={translate('sceneCopy')}
+                    copiedLabel={translate('sceneCopied')}
+                    errorLabel={translate('sceneCopyFailed')}
+                    aria-describedby={titleId}
+                    data-testid={'preview-copy-scene-' + page.id + '-' + scenario.id}
+                    disabled={pending}
+                    value={formatPdfeSceneReference(reference)}
+                    writeText={() => onCopy(reference)}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         )
       })}
     </>
@@ -101,8 +152,7 @@ function ScenarioButtons({
 }
 
 type ExpansionProps = {
-  searching: boolean
-  expanded: ReadonlySet<string>
+  isOpen: (section: string) => boolean
   onToggle: (section: string, open: boolean) => void
 }
 
@@ -121,7 +171,7 @@ function ScenarioGroups(props: SceneProps & ExpansionProps): React.JSX.Element {
               PDFE_MIN_GROUP_SCENARIOS
           )
             return <ScenarioButtons key={identity} {...props} scenarios={entries} />
-          const open = props.searching || props.expanded.has(group)
+          const open = props.isOpen(group)
           return (
             <Collapsible
               key={group}
@@ -166,7 +216,7 @@ function ScenarioGroups(props: SceneProps & ExpansionProps): React.JSX.Element {
 function ScenarioSections(
   props: SceneProps & ExpansionProps & { nested: readonly PreviewPage[] }
 ): React.JSX.Element {
-  const { page, scenarios, translate, stateLabel, searching, expanded, onToggle } = props
+  const { page, scenarios, translate, isOpen, onToggle } = props
   return (
     <>
       {[
@@ -182,7 +232,7 @@ function ScenarioSections(
           (child) => typeof child.navigation === 'object' && child.navigation.section === section
         )
         if (!section) return <ScenarioButtons key="default" {...props} scenarios={entries} />
-        const open = searching || expanded.has(section)
+        const open = isOpen(section)
         return (
           <Collapsible
             key={section}
@@ -233,30 +283,55 @@ function ScenarioSections(
 }
 
 export function PdfeNavigation({
+  manifest,
   pages,
   selected,
   activePage,
   scene,
-  searching,
+  autoExpandKey,
+  revealActive = true,
   query = '',
   pending,
   translate,
   stateLabel,
   onSelect,
   onLaunch,
+  onCopy,
 }: {
+  manifest: PdfeIterationManifest | null
   pages: readonly PreviewPage[]
   selected: PreviewPage
   activePage: string
   scene: string
-  searching: boolean
+  autoExpandKey: string | null
+  revealActive?: boolean
   query?: string
   pending: boolean
   translate: PdfeTranslate
   stateLabel: (state: string) => string
   onSelect: (page: PreviewPage) => void
   onLaunch: (page: PreviewPage, scene: string) => void
+  onCopy?: (target: PdfeTarget) => Promise<void>
 }): React.JSX.Element {
+  const revealedTarget = useRef<string | null>(null)
+  const activeButtonRef = useCallback((button: HTMLButtonElement | null) => {
+    const target = JSON.stringify([activePage, scene])
+    if (!revealActive || !button || revealedTarget.current === target) return
+    let cancelled = false
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const animations: Animation[] = []
+      for (let ancestor = button.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        animations.push(...ancestor.getAnimations().filter(animation => animation.playState === 'running' && animation.effect?.getComputedTiming().endTime !== Infinity))
+        if (ancestor.tagName === 'NAV') break
+      }
+      void Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
+        if (cancelled || !button.isConnected || button.closest('[hidden], [inert]') || revealedTarget.current === target) return
+        button.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+        revealedTarget.current = target
+      })
+    }))
+    return () => { cancelled = true }
+  }, [activePage, scene, revealActive])
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     () => new Set([pdfeNavigationGroup(selected).id])
   )
@@ -265,6 +340,20 @@ export function PdfeNavigation({
     () => new Set(selected.navigationCollection ? [selected.navigationCollection.id] : [])
   )
   const [expandedSections, setExpandedSections] = useState<Record<string, ReadonlySet<string>>>({})
+  const [filtered, setFiltered] = useState(() => ({
+    key: autoExpandKey,
+    collapsed: new Set<string>(),
+  }))
+  if (filtered.key !== autoExpandKey) setFiltered({ key: autoExpandKey, collapsed: new Set() })
+  const isOpen = (identity: string, normallyOpen: boolean): boolean =>
+    autoExpandKey === null ? normallyOpen : !filtered.collapsed.has(identity)
+  const changeOpen = (identity: string, open: boolean, changeUnfiltered: () => void): void => {
+    if (autoExpandKey === null) changeUnfiltered()
+    else setFiltered((current) => ({
+      key: autoExpandKey,
+      collapsed: toggleExpanded(current.collapsed, identity, !open),
+    }))
+  }
   return (
     <nav
       aria-label={translate('navigation')}
@@ -285,16 +374,16 @@ export function PdfeNavigation({
         ]
         const childCount =
           entries.filter((page) => !page.navigationCollection).length + collections.length
-        const groupOpen = searching || expandedGroups.has(group.id)
+        const groupKey = 'group:' + group.id
+        const groupOpen = isOpen(groupKey, expandedGroups.has(group.id))
         return (
           <Collapsible
             key={group.id}
             className="grid-cols-1 gap-0"
             open={groupOpen}
-            onOpenChange={(open) => {
-              if (!searching)
-                setExpandedGroups((current) => toggleExpanded(current, group.id, open))
-            }}
+            onOpenChange={(open) => changeOpen(groupKey, open, () =>
+              setExpandedGroups((current) => toggleExpanded(current, group.id, open))
+            )}
           >
             <CollapsibleTrigger asChild>
               <Button
@@ -319,7 +408,8 @@ export function PdfeNavigation({
                 {entries
                   .filter((page) => !page.navigationCollection)
                   .map((page) => {
-                    const pageOpen = searching || expandedPages.has(page.id)
+                    const pageKey = 'page:' + page.id
+                    const pageOpen = isOpen(pageKey, expandedPages.has(page.id))
                     const available = Boolean(page.target || page.host)
                     const scenarios = pdfeNavigationScenarios(
                       page,
@@ -335,14 +425,17 @@ export function PdfeNavigation({
                     )
                     const sectioned = page.scenarios.some((candidate) => candidate.section) || nested.some(child => typeof child.navigation === 'object' && child.navigation.section)
                     const context = {
+                      manifest,
                       page,
                       scenarios,
                       activePage,
+                      activeButtonRef,
                       scene,
                       pending,
                       translate,
                       stateLabel,
                       onLaunch,
+                      onCopy,
                     }
                     const activeScenario =
                       page.id === activePage
@@ -377,10 +470,9 @@ export function PdfeNavigation({
                           <ScenarioSections
                             {...context}
                             nested={nested}
-                            searching={searching}
-                            expanded={sections}
+                            isOpen={(section) => isOpen(pageKey + ':' + section, sections.has(section))}
                             onToggle={(section, open) => {
-                              if (!searching)
+                              changeOpen(pageKey + ':' + section, open, () =>
                                 setExpandedSections((current) => ({
                                   ...current,
                                   [page.id]: toggleExpanded(
@@ -389,6 +481,7 @@ export function PdfeNavigation({
                                     open
                                   ),
                                 }))
+                              )
                               if (open) onSelect(page)
                             }}
                           />
@@ -404,8 +497,9 @@ export function PdfeNavigation({
                         className="grid-cols-1 gap-0"
                         open={pageOpen}
                         onOpenChange={(open) => {
-                          if (!searching)
+                          changeOpen(pageKey, open, () =>
                             setExpandedPages((current) => toggleExpanded(current, page.id, open))
+                          )
                           if (open) onSelect(page)
                         }}
                       >
@@ -442,18 +536,16 @@ export function PdfeNavigation({
                     (page) => page.navigationCollection?.id === identity
                   )
                   const collection = members[0].navigationCollection!
-                  const open = searching || expandedCollections.has(identity)
+                  const collectionKey = 'collection:' + group.id + ':' + identity
+                  const open = isOpen(collectionKey, expandedCollections.has(identity))
                   return (
                     <Collapsible
                       key={identity}
                       className="grid-cols-1 gap-0"
                       open={open}
-                      onOpenChange={(value) => {
-                        if (!searching)
-                          setExpandedCollections((current) =>
-                            toggleExpanded(current, identity, value)
-                          )
-                      }}
+                      onOpenChange={(value) => changeOpen(collectionKey, value, () =>
+                        setExpandedCollections((current) => toggleExpanded(current, identity, value))
+                      )}
                     >
                       <h3>
                         <CollapsibleTrigger asChild>
@@ -482,6 +574,7 @@ export function PdfeNavigation({
                         <div className={CHILDREN_CLASS}>
                           {members.map((page) => (
                             <ScenarioButtons
+                              manifest={manifest}
                               key={page.id}
                               page={page}
                               scenarios={pdfeNavigationScenarios(
@@ -492,11 +585,13 @@ export function PdfeNavigation({
                                 translate
                               )}
                               activePage={activePage}
+                              activeButtonRef={activeButtonRef}
                               scene={scene}
                               pending={pending}
                               translate={translate}
                               stateLabel={stateLabel}
                               onLaunch={onLaunch}
+                              onCopy={onCopy}
                             />
                           ))}
                         </div>

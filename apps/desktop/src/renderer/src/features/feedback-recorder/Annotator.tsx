@@ -109,7 +109,10 @@ interface AnnotatorProps {
   initialNote: string
   source: File
   onCancel: () => void
-  onSave: (result: AnnotatorResult) => void | Promise<void>
+  onSave?: (result: AnnotatorResult) => void | Promise<void>
+  onCopyImage?: (image: Blob) => Promise<void>
+  title?: string
+  fillViewport?: boolean
 }
 
 function textAnnotation(draft: TextDraft): Extract<Annotation, { type: 'text' }> | undefined {
@@ -228,8 +231,13 @@ export function Annotator({
   source,
   onCancel,
   onSave,
+  onCopyImage = writeClipboardImage,
+  title,
+  fillViewport = false,
 }: AnnotatorProps): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: ui } = useTranslation('ui')
+  const copyOnly = !onSave
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
   const surfaceRef = React.useRef<HTMLDivElement>(null)
   const viewportRef = React.useRef<HTMLDivElement>(null)
@@ -258,6 +266,7 @@ export function Annotator({
   const [saving, setSaving] = React.useState(false)
   const [copying, setCopying] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
+  const [copyError, setCopyError] = React.useState(false)
   const [naturalSize, setNaturalSize] = React.useState({ width: 0, height: 0 })
   const [viewportSize, setViewportSize] = React.useState({ width: 0, height: 0 })
   const [manualZoom, setManualZoom] = React.useState<number | null>(null)
@@ -378,9 +387,12 @@ export function Annotator({
       if (textDraftRef.current?.id !== draft.id) return
       setTextDraft(null)
       const annotation = textAnnotation(draft)
-      if (annotation) setAnnotations((current) => [...current, annotation])
+      if (annotation) {
+        setAnnotations((current) => (copyOnly ? [annotation] : [...current, annotation]))
+        if (copyOnly) setTool(null)
+      }
     },
-    [setTextDraft]
+    [copyOnly, setTextDraft]
   )
 
   React.useEffect(() => {
@@ -466,7 +478,7 @@ export function Annotator({
       draftRef.current = { ...draft, width: current.x - draft.x, height: current.y - draft.y }
     else if (draft.type === 'arrow')
       draftRef.current = { ...draft, points: [draft.points[0], current] }
-    redraw(annotations, draftRef.current)
+    redraw(copyOnly ? [] : annotations, draftRef.current)
   }
 
   const finish = (event: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -480,13 +492,14 @@ export function Annotator({
         draft.type === 'rect' || draft.type === 'redact'
           ? normalizeRectangleAnnotation(draft)
           : draft
-      setAnnotations((current) => [...current, annotation])
+      setAnnotations((current) => (copyOnly ? [annotation] : [...current, annotation]))
+      if (copyOnly) setTool(null)
     }
   }
 
   const save = async (): Promise<void> => {
     const canvas = canvasRef.current
-    if (!canvas || saving) return
+    if (!canvas || saving || !onSave) return
     const pendingText = textDraftRef.current
     const pendingAnnotation = pendingText ? textAnnotation(pendingText) : undefined
     const finalAnnotations = pendingAnnotation ? [...annotations, pendingAnnotation] : annotations
@@ -507,17 +520,25 @@ export function Annotator({
 
   const copy = async (): Promise<void> => {
     const canvas = canvasRef.current
-    if (!canvas || copying) return
+    if (!canvas || copying || !naturalSize.width) return
     setCopying(true)
     setCopied(false)
+    setCopyError(false)
     try {
       const pendingText = textDraftRef.current
       const pendingAnnotation = pendingText ? textAnnotation(pendingText) : undefined
-      const finalAnnotations = pendingAnnotation ? [...annotations, pendingAnnotation] : annotations
+      const finalAnnotations = pendingAnnotation
+        ? copyOnly
+          ? [pendingAnnotation]
+          : [...annotations, pendingAnnotation]
+        : annotations
       setTextDraft(null)
+      if (pendingAnnotation && copyOnly) setAnnotations(finalAnnotations)
       redraw(finalAnnotations)
-      await writeClipboardImage(await canvasBlob(canvas))
+      await onCopyImage(await canvasBlob(canvas))
       setCopied(true)
+    } catch {
+      setCopyError(true)
     } finally {
       setCopying(false)
     }
@@ -533,12 +554,17 @@ export function Annotator({
       <DialogPortal>
         <DialogContent
           hideCloseButton
-          className="!z-[var(--vds-z-feedback-recorder-dialog)] !flex h-[var(--vds-feedback-dialog-height)] !w-[var(--vds-feedback-dialog-width)] !max-w-none flex-col gap-[var(--vds-space-3)] overflow-hidden !rounded-[var(--vds-radius-6)] !p-[var(--vds-space-5)]"
+          aria-label={title}
+          className={`!z-[var(--vds-z-feedback-recorder-dialog)] !flex !max-w-none flex-col gap-[var(--vds-space-3)] overflow-hidden !p-[var(--vds-space-5)] ${
+            fillViewport
+              ? '!top-0 !left-0 !h-dvh !w-full !transform-none !rounded-none !border-0 !shadow-none !pt-[var(--vds-space-9)]'
+              : 'h-[var(--vds-feedback-dialog-height)] !w-[var(--vds-feedback-dialog-width)] !rounded-[var(--vds-radius-6)]'
+          }`}
           overlayClassName="!z-[var(--vds-z-feedback-recorder-overlay)]"
           data-feedback-recorder-root="annotator"
         >
           <DialogHeader className="!flex !flex-row items-center justify-between !space-y-0">
-            <DialogTitle>{t('feedbackRecorder.annotator.title')}</DialogTitle>
+            <DialogTitle>{title ?? t('feedbackRecorder.annotator.title')}</DialogTitle>
             <IconButton
               variant="ghost"
               label={t('feedbackRecorder.cancel')}
@@ -738,7 +764,7 @@ export function Annotator({
                   variant="tertiary"
                   icon={<Copy />}
                   loading={copying}
-                  disabled={saving}
+                  disabled={saving || !naturalSize.width}
                   onClick={() => void copy()}
                 >
                   {copied
@@ -751,7 +777,7 @@ export function Annotator({
           <div
             ref={surfaceRef}
             data-testid="feedback-annotator-surface"
-            className="relative min-h-0 flex-1 overflow-hidden rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-other-overlay-3)] p-[var(--vds-space-2)]"
+            className={`relative min-h-0 flex-1 overflow-hidden rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] p-[var(--vds-space-2)] ${copyOnly ? 'bg-[var(--vds-static-white)] [--checker-shade:color-mix(in_srgb,var(--vds-static-black)_12%,var(--vds-static-white))] [background-image:conic-gradient(var(--checker-shade)_25%,transparent_0_50%,var(--checker-shade)_0_75%,transparent_0)] [background-size:var(--vds-space-3)_var(--vds-space-3)]' : 'bg-[var(--vds-other-overlay-3)]'}`}
           >
             <div
               ref={viewportRef}
@@ -818,43 +844,52 @@ export function Annotator({
               </div>
             ) : null}
           </div>
-          <div className="grid gap-[var(--vds-space-2)]">
-            <label
-              htmlFor="feedback-screenshot-note"
-              className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-primary)]"
-            >
-              {t('feedbackRecorder.annotator.noteLabel')}
-            </label>
-            <div className="overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-control-border)] bg-[var(--vds-bg-white-default)] focus-within:border-[var(--vds-border-brand)]">
-              <Textarea
-                id="feedback-screenshot-note"
-                aria-label={t('feedbackRecorder.annotator.noteLabel')}
-                rows={3}
-                className="!min-h-0 !resize-none !overflow-y-auto !border-0 !bg-transparent !shadow-none"
-                maxLength={RECORDER_NOTE_MAX_LENGTH}
-                placeholder={t('feedbackRecorder.note.label')}
-                value={note}
-                disabled={saving}
-                onChange={(event) => setNote(event.currentTarget.value)}
-              />
-              <div className="px-[var(--vds-space-3)] pb-[var(--vds-space-2)] text-right text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
-                {note.length}/{RECORDER_NOTE_MAX_LENGTH}
+          {copyError && (
+            <p role="alert" className="text-[var(--vds-error-text-primary)]">
+              {ui('copy.error')}
+            </p>
+          )}
+          {!copyOnly && (
+            <div className="grid gap-[var(--vds-space-2)]">
+              <label
+                htmlFor="feedback-screenshot-note"
+                className="text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-primary)]"
+              >
+                {t('feedbackRecorder.annotator.noteLabel')}
+              </label>
+              <div className="overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-control-border)] bg-[var(--vds-bg-white-default)] focus-within:border-[var(--vds-border-brand)]">
+                <Textarea
+                  id="feedback-screenshot-note"
+                  aria-label={t('feedbackRecorder.annotator.noteLabel')}
+                  rows={3}
+                  className="!min-h-0 !resize-none !overflow-y-auto !border-0 !bg-transparent !shadow-none"
+                  maxLength={RECORDER_NOTE_MAX_LENGTH}
+                  placeholder={t('feedbackRecorder.note.label')}
+                  value={note}
+                  disabled={saving}
+                  onChange={(event) => setNote(event.currentTarget.value)}
+                />
+                <div className="px-[var(--vds-space-3)] pb-[var(--vds-space-2)] text-right text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+                  {note.length}/{RECORDER_NOTE_MAX_LENGTH}
+                </div>
               </div>
             </div>
-          </div>
+          )}
           {saveError && (
             <p role="alert" className="text-[var(--vds-error-text-primary)]">
               {t('feedbackRecorder.screenshotFailed')}
             </p>
           )}
-          <DialogFooter>
-            <Button variant="outline" disabled={saving} onClick={onCancel}>
-              {t('feedbackRecorder.cancel')}
-            </Button>
-            <Button loading={saving} onClick={() => void save()}>
-              {t('feedbackRecorder.annotator.save')}
-            </Button>
-          </DialogFooter>
+          {!copyOnly && (
+            <DialogFooter>
+              <Button variant="outline" disabled={saving} onClick={onCancel}>
+                {t('feedbackRecorder.cancel')}
+              </Button>
+              <Button loading={saving} onClick={() => void save()}>
+                {t('feedbackRecorder.annotator.save')}
+              </Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </DialogPortal>
     </Dialog>

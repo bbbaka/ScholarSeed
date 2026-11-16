@@ -3,7 +3,6 @@ import { resolveContentResponse } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
 import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
-import { readApiJson, reportCatalogReady, reportCatalogFailure } from './app/api/timing.ts'
 import {
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
@@ -1063,7 +1062,7 @@ async function requestSessionCatalog(
     }
     let payload: unknown
     try {
-      payload = await readApiJson(response)
+      payload = await response.json()
     } catch (error) {
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'decode', error)
       if (
@@ -1075,20 +1074,16 @@ async function requestSessionCatalog(
     }
     const catalog = parseSessionCatalogResult(payload)
     if (!catalog) {
-      reportCatalogFailure(response, 'schema')
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'schema')
       return { ok: false, failure: { kind: 'schema', retryable: false } }
     }
     if (synchronizeRoots) syncSessionRoots(catalog.sessions)
-    reportCatalogReady(response, catalog.sessions.length)
     return { ok: true, catalog }
   } catch (error) {
     // apiFetch owns HTTP/transport diagnostics. A received response distinguishes
     // subsequent client processing failures without logging its body or paths.
-    if (response) {
-      reportCatalogFailure(response, 'projection', error)
+    if (response)
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'projection', error)
-    }
     return { ok: false, failure: { kind: 'transport', retryable: true } }
   }
 }
@@ -2199,7 +2194,7 @@ export async function setMode(
   sid: string,
   mode: string,
   application: PermissionApplication = 'auto',
-  continuation?: TurnContextAdmission & { locale: string }
+  continuation?: TurnContextAdmission
 ): Promise<ModeChangeResult> {
   try {
     const response = await apiFetch(`/api/serve/sessions/${sid}/mode`, {
@@ -2211,7 +2206,6 @@ export async function setMode(
         ...(continuation
           ? {
               continuation_context: {
-                locale: continuation.locale,
                 client_user_message_id: continuation.clientUserMessageId,
                 assistant_context_revision: continuation.assistantContextRevision,
                 active_document: continuation.activeDocument,

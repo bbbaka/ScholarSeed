@@ -35,7 +35,7 @@ variables:
   # uv 把包缓存在项目内, 便于 GitLab 缓存命中。
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  GIT_DEPTH: "0"
+  GIT_DEPTH: "50"
   # pip/uv 的包索引。与 pyproject 的 [[tool.uv.index]] 保持一致; runner 若有自己的
   # 内网索引, 在项目 CI/CD 变量里覆盖这一项即可, 不必改本文件。
   PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/"
@@ -225,9 +225,9 @@ ci-package-macos:
   timeout: 4h
   before_script:
     - npm ci --no-audit --no-fund
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
     - node scripts/ops-cli.cjs --package-manager npm pre repair links
     - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope links
-    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
     - node scripts/ops-cli.cjs --package-manager npm pre install python
     - node scripts/ops-cli.cjs --package-manager npm ci check docs workspace
     - node scripts/ops-cli.cjs --package-manager npm ci check docs desktop
@@ -254,9 +254,9 @@ ci-package-windows:
   timeout: 4h
   before_script:
     - npm ci --no-audit --no-fund
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
     - node scripts/ops-cli.cjs --package-manager npm pre repair links
     - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope links
-    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
     - node scripts/ops-cli.cjs --package-manager npm pre install python
     - node scripts/ops-cli.cjs --package-manager npm ci check docs workspace
     - node scripts/ops-cli.cjs --package-manager npm ci check docs desktop

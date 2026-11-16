@@ -14,14 +14,15 @@ import type { PreviewBrowsingPolicy } from './listing.ts'
 import { PREVIEW_HOME, type PreviewHomePolicy } from './home.ts'
 import zh from './locales/zh.json' with { type: 'json' }
 import { dialogPages } from './dialogs.ts'
-import type { PdfeFeatureId } from './iterations.ts'
+import type { PreviewSchedulePolicy, PreviewScheduleRecommendations } from './scheduling.ts'
+import { PREVIEW_PROJECT_SEARCH } from './search.ts'
 
 export type PreviewTarget = NonNullable<RendererPreferences['lastLocation']>
 export type PreviewAvailability = 'pending' | 'hidden' | 'native-only'
 export type PreviewImplementation = 'surface' | 'alias' | 'placeholder'
 
 export interface PreviewScenario {
-  readonly feature?: PdfeFeatureId
+  readonly feature?: string
   readonly expectedKeys?: readonly (keyof typeof zh)[]
   readonly limitationKeys?: readonly (keyof typeof zh)[]
   readonly section?: 'areaDaily' | 'areaBoundaries' | 'areaRecovery'
@@ -37,6 +38,12 @@ export interface PreviewScenario {
   readonly limitations: readonly string[]
   readonly status: 'unverified'
   readonly simulation?: {
+    readonly memory?: 'sample' | 'empty' | 'review'
+    readonly projectSearch?: true
+    readonly schedules?: PreviewSchedulePolicy
+    readonly scheduleRecommendations?: PreviewScheduleRecommendations
+    readonly paperDiscovery?: true
+    readonly personalizedDiscovery?: true
     readonly artifacts?: PreviewArtifactPolicy
     readonly browser?: PreviewBrowserPolicy
     readonly literature?: PreviewLiteraturePolicy
@@ -305,6 +312,9 @@ function homeScenario(
   }
 }
 const HOME_SCENARIOS: readonly PreviewScenario[] = [
+  { ...scenario('home-memory-review', '记忆 · 三种会话状态', ['empty', 'updated', 'many'],
+    ['切换三个独立会话查看无更新、少量更新和大量更新；大量条目采用预览与分页详情。'],
+    ['仅使用隔离的记忆与会话样本，不调用真实算法。']), titleKey: 'memoryReview', simulation: { memory: 'review' } },
   {
     ...homeScenario(
       'home-states',
@@ -683,6 +693,16 @@ const LITERATURE_SCENARIOS: readonly PreviewScenario[] = [
 ]
 
 const CONVERSATION_SCENARIOS: readonly PreviewScenario[] = [
+  {
+    ...scenario(
+      'conversation-editing',
+      '会话编辑 · 独立任务分支',
+      ['editable', 'attachments', 'branch', 'streaming'],
+      ['编辑中间轮或最新用户消息，取消不改变原对话；提交后新建并进入独立分支，保留前序历史快照。'],
+      ['首轮及运行中不可编辑；仅模拟文件引用和回答，不运行真实模型或外部操作。']
+    ),
+    simulation: { conversation: { mode: 'streaming', stream: 'interruptible', editing: true } },
+  },
   {
     ...scenario(
       'conversation-context-draft',
@@ -1568,7 +1588,23 @@ const PROJECT_LAYOUT_SCENARIOS: readonly PreviewScenario[] = [
   ),
 ]
 
+const PROJECT_SEARCH_SCENARIO: PreviewScenario = {
+  ...scenario(PREVIEW_PROJECT_SEARCH.scene, zh.projectSearchShortcuts, ['populated', 'filtered', 'empty', 'opened'], [zh.projectSearchShortcutsExpected]),
+  titleKey: 'projectSearchShortcuts',
+  feature: PREVIEW_PROJECT_SEARCH.feature,
+  expectedKeys: ['projectSearchShortcutsExpected'],
+  limitationKeys: ['projectSearchShortcutsLimitation'],
+  simulation: { projectSearch: true, literature: { seed: 'sample', read: 'normal', detail: 'normal', write: 'normal' } },
+}
+
 const SETTINGS_SCENARIOS: Partial<Record<AccountSettingsPage, readonly PreviewScenario[]>> = {
+  memory: [
+    { ...scenario('settings-memory-states', '记忆管理与会话更新', ['loaded', 'disabled', 'cleared'],
+      ['分别控制全局与项目记忆，查看文件与清空确认；会话任务概览按五维显示本次新增和修改。'],
+      ['仅使用隔离样本，不读写本机记忆文件、不调用算法；刷新页面恢复样本。']), simulation: { memory: 'sample' } },
+    { ...scenario('settings-memory-empty', '记忆空态', ['empty'], ['无记忆时保留开关与目录入口，清空按钮不可用。'],
+      ['仅模拟空态，不读写本机文件。']), simulation: { memory: 'empty' } },
+  ],
   translation: [
     scenario(
       'translation-settings',
@@ -2023,11 +2059,13 @@ const PAGE_DEFINITIONS: readonly [MainView, string, string, string, PreviewAvail
     'src/renderer/src/features/literature/feature.tsx',
     PENDING,
   ],
+  ['discovery', '论文发现', 'literature', 'src/renderer/src/features/literature/Discovery.tsx', PENDING],
   ['browser', '内置浏览器', 'browser', 'src/renderer/src/features/browser/feature.tsx', 'hidden'],
   ['skills', '技能中心', 'skills', 'src/renderer/src/features/skills/feature.tsx', PENDING],
 ]
 
 const SETTINGS_DEFINITIONS: readonly [AccountSettingsPage, string, PreviewAvailability][] = [
+  ['memory', '记忆', PENDING],
   ['translation', '翻译配置', PENDING],
   ['prompts', '提示词', PENDING],
   ['preferences', '偏好', 'hidden'],
@@ -2082,6 +2120,87 @@ const SURFACE_DEFINITIONS: readonly [string, string, string, string][] = [
   ['error', '加载失败与错误边界', 'app', 'src/renderer/src/app/Error.tsx'],
 ]
 
+const SCHEDULE_MANAGEMENT_SCENARIOS: readonly PreviewScenario[] = ([
+  ['schedules-sample', 'scheduleSample', 'sample', ['populated', 'edited', 'failed']],
+  ['schedules-empty', 'scheduleEmpty', 'empty', ['empty', 'created']],
+] as const).map(([id, titleKey, policy, states]) => ({
+  ...scenario(id, zh[titleKey], states, [zh.scheduleExpected], [zh.scheduleLimitation]),
+  titleKey,
+  feature: 'scheduled-tasks',
+  expectedKeys: ['scheduleExpected'],
+  limitationKeys: ['scheduleLimitation'],
+  simulation: { schedules: policy },
+}))
+
+const SCHEDULE_SCENARIOS: readonly PreviewScenario[] = [
+  ...SCHEDULE_MANAGEMENT_SCENARIOS,
+  {
+    ...scenario('schedules-archive-partial-failure', zh.scheduleArchivePartialFailure, ['archived', 'failed'], [zh.scheduleArchivePartialFailureExpected], [zh.scheduleLimitation]),
+    titleKey: 'scheduleArchivePartialFailure', feature: 'scheduled-tasks',
+    expectedKeys: ['scheduleArchivePartialFailureExpected'], limitationKeys: ['scheduleLimitation'],
+    simulation: { schedules: 'sample', archives: { seed: 'empty', read: 'normal', history: 'normal', write: 'fail-once' } },
+  },
+  {
+    ...scenario('schedules-load-failure', zh.scheduleLoadFailure, ['failed', 'empty'], [zh.scheduleLoadFailureExpected], [zh.scheduleLimitation]),
+    titleKey: 'scheduleLoadFailure', feature: 'scheduled-tasks',
+    expectedKeys: ['scheduleLoadFailureExpected'], limitationKeys: ['scheduleLimitation'],
+    simulation: { schedules: 'read-failure' },
+  },
+  ...([
+    ['schedules-new-project', 'scheduleNewProject', 'new-project'],
+    ['schedules-conversations', 'scheduleConversations', 'conversations'],
+    ['schedules-materials', 'scheduleMaterials', 'materials'],
+  ] as const).map(([id, titleKey, policy]): PreviewScenario => ({
+    ...scenario(id, zh[titleKey], ['populated', 'created'], [zh.scheduleRecommendationsExpected], [zh.scheduleRecommendationsLimitation]),
+    titleKey,
+    feature: 'scheduled-tasks',
+    expectedKeys: ['scheduleRecommendationsExpected'],
+    limitationKeys: ['scheduleRecommendationsLimitation'],
+    simulation: { schedules: 'empty', scheduleRecommendations: policy },
+  })),
+]
+
+const SCHEDULE_CREATED: PreviewScenario = {
+  ...scenario('schedules-created', zh.scheduleCreated, ['opened', 'created'], [zh.scheduleCreatedExpected]),
+  titleKey: 'scheduleCreated',
+  feature: 'scheduled-tasks',
+  expectedKeys: ['scheduleCreatedExpected'],
+  limitationKeys: ['scheduleLimitation'],
+  simulation: { schedules: 'created' },
+}
+
+const SCHEDULE_CLARIFICATION: PreviewScenario = {
+  ...scenario('schedules-clarification', zh.scheduleClarification, ['opened'], [zh.scheduleClarificationExpected]),
+  titleKey: 'scheduleClarification', feature: 'scheduled-tasks',
+  expectedKeys: ['scheduleClarificationExpected'], limitationKeys: ['scheduleLimitation'],
+  simulation: { schedules: 'clarification' },
+}
+
+const SCHEDULE_ARCHIVED_RUNS: PreviewScenario = {
+  ...scenario('schedules-archived-runs', zh.scheduleArchivedRuns, ['archived', 'opened'], [zh.scheduleArchivedRunsExpected], [zh.scheduleLimitation]),
+  titleKey: 'scheduleArchivedRuns', feature: 'scheduled-tasks',
+  expectedKeys: ['scheduleArchivedRunsExpected'], limitationKeys: ['scheduleLimitation'],
+  simulation: { schedules: 'archived' },
+}
+
+const PAPER_DISCOVERY: PreviewScenario = {
+  ...scenario('paper-discovery-curated', zh.paperDiscovery, ['populated', 'filtered', 'opened'], [zh.paperDiscoveryExpected]),
+  titleKey: 'paperDiscovery',
+  feature: 'paper-discovery',
+  expectedKeys: ['paperDiscoveryExpected'],
+  limitationKeys: ['paperDiscoveryLimitation'],
+  simulation: { schedules: 'empty', paperDiscovery: true, browser: { seed: 'empty', surface: { seed: 'empty', paperPdf: true } } },
+}
+
+const PAPER_SEARCH: PreviewScenario = {
+  ...scenario('paper-search-reasoning', zh.paperSearchReasoning, ['populated', 'filtered', 'opened'], [zh.paperSearchReasoningExpected]),
+  titleKey: 'paperSearchReasoning',
+  feature: 'paper-discovery',
+  expectedKeys: ['paperSearchReasoningExpected'],
+  limitationKeys: ['paperDiscoveryLimitation'],
+  simulation: { schedules: 'empty', paperDiscovery: true, browser: { seed: 'empty', surface: { seed: 'empty', paperPdf: true } } },
+}
+
 const PRODUCT_PREVIEW_CATALOG: readonly PreviewPage[] = [
   ...PAGE_DEFINITIONS.map(([view, title, owner, source, availability]): PreviewPage => ({
     ...(view === 'projects' ? { navigation: 'hidden' as const } : {}),
@@ -2119,7 +2238,7 @@ const PRODUCT_PREVIEW_CATALOG: readonly PreviewPage[] = [
           ? browserSurfaceScenarios('browser', ['empty', 'loading', 'populated', 'error'])
           : [
               ...(view === 'conversation'
-                ? CONVERSATION_SCENARIOS
+                ? [...CONVERSATION_SCENARIOS, SCHEDULE_CREATED, SCHEDULE_CLARIFICATION]
                 : view === 'projects'
                   ? PROJECT_SCENARIOS
                   : [
@@ -2135,11 +2254,26 @@ const PRODUCT_PREVIEW_CATALOG: readonly PreviewPage[] = [
                     ]),
               ...(PRIMARY_BROWSE_SCENARIOS[view] ? [PRIMARY_BROWSE_SCENARIOS[view]!] : []),
               ...(view === 'literature' ? LITERATURE_SCENARIOS : []),
+              ...(view === 'discovery' ? [PAPER_DISCOVERY, { ...PAPER_DISCOVERY, id: 'paper-discovery-personalized', titleKey: 'paperPersonalized' as const, simulation: { ...PAPER_DISCOVERY.simulation, personalizedDiscovery: true as const } }, PAPER_SEARCH] : []),
               ...(view === 'resource'
-                ? [...PROJECT_ARCHIVE_SCENARIOS, ...PROJECT_LAYOUT_SCENARIOS]
+                ? [...PROJECT_ARCHIVE_SCENARIOS, ...PROJECT_LAYOUT_SCENARIOS, PROJECT_SEARCH_SCENARIO, SCHEDULE_ARCHIVED_RUNS]
                 : []),
             ],
   })),
+  {
+    id: 'page-schedules',
+    title: zh.scheduleTitle,
+    titleKey: 'scheduleTitle',
+    owner: 'schedules',
+    source: 'src/renderer/src/features/schedules/Page.tsx',
+    entry: 'schedules',
+    category: 'page',
+    availability: PENDING,
+    implementation: 'surface',
+    requirementSource: '本次 Goal：复用源分支的定时任务界面，以 PDFE 隔离数据验证原型。',
+    target: { ...location('schedules'), projectId: PREVIEW_PROJECT_ID },
+    scenarios: SCHEDULE_SCENARIOS,
+  },
   ...SETTINGS_DEFINITIONS.map(([page, title, availability]): PreviewPage => ({
     id: `settings-${page}`,
     title,

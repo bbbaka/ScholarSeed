@@ -224,6 +224,7 @@ export function ModelMenu({
   onModelSelect,
   modelFilter,
   showEffort = true,
+  effortControl,
   variant = 'ghost',
 }: {
   compact?: boolean
@@ -234,6 +235,7 @@ export function ModelMenu({
   onModelSelect?: (model: ModelInfo) => void
   modelFilter?: (model: ModelInfo) => boolean
   showEffort?: boolean
+  effortControl?: ReturnType<typeof useEffort>
   variant?: 'ghost' | 'outline'
 }): React.JSX.Element {
   const {
@@ -249,7 +251,8 @@ export function ModelMenu({
   const { t } = useTranslation('components')
   const { t: account } = useTranslation('account')
   const { models, subscriptionGroups } = state.catalog
-  const effort = useEffort()
+  const sessionEffort = useEffort(!effortControl)
+  const effort = effortControl ?? sessionEffort
   const [localOpen, setLocalOpen] = React.useState(false)
   const [submenu, setSubmenu] = React.useState<'effort' | null>(null)
   const menuOpen = independent ? localOpen : state.modelMenuOpen

@@ -70,6 +70,7 @@ const TAB_ICONS: Record<
   canvas: 'doc',
   projects: 'folder',
   browser: 'globe',
+  discovery: 'search',
   web_search: 'globe',
   review: 'edit-square',
   version_diff: 'rewind',
@@ -203,7 +204,9 @@ export function TabBar({
                 ? state.homeSelectedProjectId
                   ? t('chrome.projectLiterature')
                   : t('chrome.literatureOverview')
-                : workbenchTabTitle(tab, literature, workbench),
+                : tab.kind === 'discovery'
+                  ? literature('discovery.title')
+                  : workbenchTabTitle(tab, literature, workbench),
         },
       ]
     })

@@ -1780,6 +1780,7 @@ class SessionService:
                         for item in self._access.uncertainties(session_id, unresolved_only=True)
                     ],
                     "interrupting": bool(live and live.interrupting),
+                    "last_interrupt_succeeded": live.last_interrupt_succeeded if live else None,
                     "queued_messages": [
                         queued_message_payload(
                             item,

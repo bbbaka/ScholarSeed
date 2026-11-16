@@ -80,6 +80,7 @@ export type TabKind =
   | 'projects'
   | 'browser'
   | 'literature'
+  | 'discovery'
   | 'literature_search'
   | 'web_search'
   | 'review'
@@ -112,7 +113,7 @@ export interface WorkbenchTab {
   projectId?: string | null
   canvasSessionId?: string
   restoreCanvas?: boolean
-  navigationView?: 'resource' | 'literature'
+  navigationView?: 'resource' | 'literature' | 'discovery'
 }
 
 const VIEWER_BY_EXTENSION: Record<string, ViewerKind> = {
@@ -186,6 +187,7 @@ export const LITERATURE_TAB: WorkbenchTab = {
  * 反向标注类型会成环。
  */
 export const FIXED_TAB_BY_VIEW: Record<string, WorkbenchTab> = {
+  discovery: { id: 'discovery', kind: 'discovery', title: '', closable: false },
   browser: { id: 'browser', kind: 'browser', title: BROWSER_TAB_TITLE, closable: true },
   projects: PROJECTS_TAB,
   literature: LITERATURE_TAB,
@@ -573,7 +575,12 @@ export function openLiteratureSearchTabs(
  * 视图键用 string 而非 MainView：store 依赖本模块，反向标注类型会成环。
  */
 export function documentTabsVisibleInView(mainView: string): boolean {
-  return mainView === 'resource' || mainView === 'literature' || mainView === 'browser'
+  return (
+    mainView === 'resource' ||
+    mainView === 'literature' ||
+    mainView === 'discovery' ||
+    mainView === 'browser'
+  )
 }
 
 export function tabVisibleInCurrentView(
@@ -582,10 +589,17 @@ export function tabVisibleInCurrentView(
   policy: AvailabilityPolicy = availabilityPolicy
 ): boolean {
   if (!policy.routeAvailable(mainView) || !policy.tabAvailable({ kind, id: kind })) return false
-  if (kind === 'browser') return mainView === 'browser' || mainView === 'resource'
-  if (mainView === 'browser') return tabVisibleInCurrentView(kind, 'resource', policy)
+  if (kind === 'browser') return documentTabsVisibleInView(mainView)
+  if (mainView === 'browser' && kind === 'literature_search') return false
+  if (mainView === 'browser')
+    return (
+      tabVisibleInCurrentView(kind, 'resource', policy) ||
+      tabVisibleInCurrentView(kind, 'literature', policy)
+    )
   if (kind === 'overview') return false
   if (mainView === 'projects') return kind === 'projects'
+  if (mainView === 'discovery') return kind === 'discovery'
+  if (kind === 'discovery') return false
   if (mainView === 'literature') return kind === 'literature' || kind === 'literature_search'
   if (mainView === 'resource')
     return (
@@ -662,7 +676,7 @@ export function closeTab(
   const [nearest] = sameViewNeighbours(next, index, context)
   if (nearest !== undefined) return { tabs: next, activeId: next[nearest].id }
   if (context.viewFallbackId) return { tabs: next, activeId: context.viewFallbackId }
-  const fixed = context.view === 'literature' ? LITERATURE_TAB : OVERVIEW_TAB
+  const fixed = FIXED_TAB_BY_VIEW[context.view] ?? OVERVIEW_TAB
   return { tabs: next, activeId: fixed.id }
 }
 
@@ -690,10 +704,11 @@ export function isLiteratureResultTab(tabId: string): boolean {
 
 export function mainViewForWorkbenchTab(
   tab: WorkbenchTab | undefined
-): 'projects' | 'browser' | 'literature' | 'resource' | null {
+): 'projects' | 'browser' | 'literature' | 'discovery' | 'resource' | null {
   if (!tab || tab.kind === 'overview') return null
   if (tab.navigationView) return tab.navigationView
   if (tab.kind === 'projects') return 'projects'
+  if (tab.kind === 'discovery') return 'discovery'
   if (tab.kind === 'browser') return 'browser'
   if (['literature', 'literature_search'].includes(tab.kind)) return 'literature'
   return 'resource'

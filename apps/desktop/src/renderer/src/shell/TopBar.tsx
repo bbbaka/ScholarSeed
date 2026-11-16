@@ -41,8 +41,11 @@ export function TopBarLeft({
   const { state, set, act } = useApp()
   const { t } = useTranslation('shell')
   const { t: layoutText } = useTranslation('layout')
-  const isLiteratureOverview = state.mainView === 'literature' && !state.homeSelectedProjectId
-  const compactLiteratureHeader = isLiteratureOverview && !state.modulePanelOpen
+  const isLiteratureOverview =
+    (state.mainView === 'literature' || state.mainView === 'discovery') &&
+    !state.homeSelectedProjectId
+  const compactLiteratureHeader =
+    isLiteratureOverview && (state.mainView === 'discovery' || !state.modulePanelOpen)
   const projectLabel =
     (state.mainView === 'home'
       ? t('chrome.projectOverview')
@@ -51,14 +54,15 @@ export function TopBarLeft({
         : undefined) ??
     selectedProject(state)?.name ??
     t('chrome.selectProject')
-  const showGlobalSearch = state.mainView !== 'literature' || Boolean(state.homeSelectedProjectId)
+  const showGlobalSearch = !isLiteratureOverview
 
   return (
     <div
       className={`${TOPBAR_LEFT_GROUP_CLASS_NAME}${showRightBorder && !compactLiteratureHeader ? TOPBAR_RIGHT_DIVIDER_CLASS_NAME : ''}${compactLiteratureHeader ? ' !border-t-0 !border-l-0' : ''}`}
     >
       {isLiteratureOverview ? (
-        state.modulePanelOpen && (
+        state.modulePanelOpen &&
+        state.mainView !== 'discovery' && (
           <h1
             className={`min-w-0 flex-1 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)]${window.scholarseed?.platform === 'darwin' ? ' pl-[calc(var(--vds-layout-window-controls-end)+var(--vds-space-3)-var(--vds-window-controls-left-space))]' : ''}`}
             data-testid="topbar-literature-title"
@@ -222,7 +226,8 @@ interface TopBarProps {
 export function TopBar({ leftWidth }: TopBarProps): React.JSX.Element {
   const { state } = useApp()
   const compactLiteratureHeader =
-    state.mainView === 'literature' && !state.homeSelectedProjectId && !state.modulePanelOpen
+    state.mainView === 'discovery' ||
+    (state.mainView === 'literature' && !state.homeSelectedProjectId && !state.modulePanelOpen)
   const leftStyle = {
     '--vds-collapsed-sidebar-width': compactLiteratureHeader
       ? 'calc(var(--vds-window-controls-left-space) + var(--vds-control-height-sm) + var(--vds-space-1))'

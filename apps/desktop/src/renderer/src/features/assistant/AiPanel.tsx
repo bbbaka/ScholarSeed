@@ -22,6 +22,7 @@ import {
   RotateCcwClock,
   Trash,
   X,
+  Search,
 } from 'lucide-react'
 
 import { getSkills, renameSession, terminateSession, type ServeSession } from '../../api'
@@ -68,6 +69,8 @@ import { SESSION_TITLE_MAX_LENGTH } from '../../model'
 import { focusComposer } from '../../reference'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { activeThread, assistantProject, useApp, type ComposerReference } from '../../store'
+import { currentShortcutPlatform } from '../../shortcuts'
+import { searchIsBlocked, searchShortcut } from '../search/keyboard'
 import { DraftAttachments } from './Images'
 import { findSessionNode, serveSessionNode } from '../../tree'
 import { useAttention } from './attention'
@@ -82,6 +85,7 @@ import { assistantHeadingScope, truncateProjectName } from './heading'
 import { listTaskHistory } from './history'
 import {
   AI_TASK_STARTERS,
+  TASK_STARTER_FIELD,
   AI_TASK_STARTER_SKILL_NAMES,
   resolveTaskStarterSkill,
   type TaskStarterSkillFailure,
@@ -190,6 +194,10 @@ export function AiPanel({
   headerCollapsed = false,
   workspaceLeading,
   workspaceActions,
+  headerContent,
+  titlePrefix,
+  renderTitle = (title) => title,
+  renderReadonlyNotice = (notice) => notice,
   onToggleContent,
   floatingContent,
 }: {
@@ -202,6 +210,10 @@ export function AiPanel({
   headerCollapsed?: boolean
   workspaceLeading?: React.ReactNode
   workspaceActions?: React.ReactNode
+  headerContent?: React.ReactNode
+  titlePrefix?: React.ReactNode
+  renderTitle?: (title: React.ReactNode) => React.ReactNode
+  renderReadonlyNotice?: (notice: React.ReactNode) => React.ReactNode
   onToggleContent?: () => void
   floatingContent?: {
     side: 'top' | 'bottom'
@@ -247,6 +259,35 @@ export function AiPanel({
   const floatingDrag = useRef<FloatingDrag | null>(null)
   const floatingResize = useRef<FloatingResize | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
+  const [findRequest, setFindRequest] = useState(0)
+  const [findOpen, setFindOpen] = useState(false)
+  const openFind = useCallback(() => {
+    setFindOpen(true)
+    setFindRequest((request) => request + 1)
+  }, [])
+  useEffect(() => {
+    setFindOpen(false)
+  }, [thread.id, thread.sessionId])
+  useEffect(() => {
+    const handleSearch = (event: KeyboardEvent) => {
+      const panel = panelRef.current
+      if (
+        searchShortcut(event) !== 'conversation' ||
+        compact ||
+        inlineComposer ||
+        !panel?.getClientRects().length ||
+        searchIsBlocked()
+      )
+        return
+      const target = event.target instanceof Node ? event.target : null
+      if (!panel.contains(target) && !embedded) return
+      if (!state.activeSession && !state.turnLaunch) return
+      event.preventDefault()
+      openFind()
+    }
+    window.addEventListener('keydown', handleSearch)
+    return () => window.removeEventListener('keydown', handleSearch)
+  }, [compact, inlineComposer, embedded, state.activeSession, state.turnLaunch, openFind])
   const previousCompact = useRef(compact)
   useEffect(() => {
     if (previousCompact.current && !compact && !inlineComposer) focusComposer()
@@ -327,6 +368,13 @@ export function AiPanel({
       return
     }
     act.askAiFromPanel(t(starter.promptKey), 'taskType' in starter ? starter.taskType : undefined)
+    const [prefix, suffix] = t(starter.promptKey).split(TASK_STARTER_FIELD)
+    composerDraft.setTemplate({
+      prefix,
+      suffix: suffix ?? '',
+      label: t(starter.fieldLabelKey),
+      placeholder: t(starter.fieldPlaceholderKey),
+    })
     set((current) => ({
       composerRefs: [
         ...current.composerRefs.filter(
@@ -954,35 +1002,39 @@ export function AiPanel({
                 />
               </div>
             )}
-            {headingScope ? (
-              <Breadcrumb className="min-w-0" data-testid="ai-scope-breadcrumb">
-                <BreadcrumbList className="min-w-0 flex-nowrap gap-[var(--vds-space-2)]">
-                  <BreadcrumbItem className="min-w-0 shrink">
-                    <Tooltip content={headingScope} portalled side="bottom" className="min-w-0">
-                      <span
-                        className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]"
-                        data-testid="ai-scope-name"
-                        tabIndex={0}
-                      >
-                        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                          {projectName ? truncateProjectName(headingScope) : headingScope}
+            {titlePrefix}
+            {renderTitle(
+              headingScope ? (
+                <Breadcrumb className="min-w-0" data-testid="ai-scope-breadcrumb">
+                  <BreadcrumbList className="min-w-0 flex-nowrap gap-[var(--vds-space-2)]">
+                    <BreadcrumbItem className="min-w-0 shrink">
+                      <Tooltip content={headingScope} portalled side="bottom" className="min-w-0">
+                        <span
+                          className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]"
+                          data-testid="ai-scope-name"
+                          tabIndex={0}
+                        >
+                          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                            {projectName ? truncateProjectName(headingScope) : headingScope}
+                          </span>
                         </span>
-                      </span>
-                    </Tooltip>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator />
-                  <BreadcrumbItem className="min-w-0 flex-1">
-                    <BreadcrumbPage className="truncate text-[var(--vds-text-primary)]">
-                      {sessionTitle}
-                    </BreadcrumbPage>
-                  </BreadcrumbItem>
-                </BreadcrumbList>
-              </Breadcrumb>
-            ) : (
-              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--vds-text-primary)]">
-                {sessionTitle}
-              </span>
+                      </Tooltip>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator />
+                    <BreadcrumbItem className="min-w-0 flex-1">
+                      <BreadcrumbPage className="truncate text-[var(--vds-text-primary)]">
+                        {sessionTitle}
+                      </BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
+              ) : (
+                <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--vds-text-primary)]">
+                  {sessionTitle}
+                </span>
+              )
             )}
+            {headerContent}
             {!inlineComposer && window.scholarseed.developerToolsEnabled && thread.sessionId && (
               <Tooltip content={t('panel.copyId')} side="bottom" portalled className="shrink-0">
                 <IconButton
@@ -1011,6 +1063,16 @@ export function AiPanel({
           </div>
           <div className="vds-ai-head-actions flex flex-none items-center gap-[var(--vds-ai-header-actions-gap)]">
             <div className="contents">
+              {!inlineComposer && !compact && state.activeSession && (
+                <HeadAction
+                  label={t('find.shortcut', {
+                    shortcut: currentShortcutPlatform() === 'mac' ? '⌘F' : 'Ctrl+F',
+                  })}
+                  data-testid="conversation-find-open"
+                  icon={<Search />}
+                  onClick={openFind}
+                />
+              )}
               {!inlineComposer && (
                 <HeadAction
                   label={t('panel.new')}
@@ -1359,6 +1421,9 @@ export function AiPanel({
               </div>
             ) : (
               <Stream
+                findOpen={findOpen}
+                findRequest={findRequest}
+                onFindClose={() => setFindOpen(false)}
                 scrollControlTarget={
                   externalConfirmation || thread.readOnly ? null : scrollControlTarget
                 }
@@ -1380,7 +1445,7 @@ export function AiPanel({
             >
               {thread.readOnly && (
                 <p className="mx-auto w-full max-w-[var(--vds-conversation-content-width)] px-[var(--vds-conversation-inline-gutter)] text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]">
-                  {componentText('taskArchive.readonly')}
+                  {renderReadonlyNotice(componentText('taskArchive.readonly'))}
                 </p>
               )}
               <fieldset

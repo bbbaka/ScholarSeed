@@ -6,6 +6,7 @@ import type { SkillInfo } from '../../api.ts'
 import {
   AI_TASK_STARTERS,
   AI_TASK_STARTER_SKILL_NAMES,
+  TASK_STARTER_FIELD,
   resolveTaskStarterSkill,
 } from './starters.ts'
 
@@ -21,6 +22,23 @@ function skill(overrides: Partial<SkillInfo> = {}): SkillInfo {
     ...overrides,
   }
 }
+
+test('each localized starter has one explicit user field and a separate example', () => {
+  for (const language of ['zh', 'en']) {
+    const resources = JSON.parse(
+      readFileSync(
+        new URL(`../../../../localization/locales/${language}/assistant.json`, import.meta.url),
+        'utf8'
+      )
+    )
+    for (const starter of AI_TASK_STARTERS) {
+      const prompt = resources.panel[starter.promptKey.replace('panel.', '')]
+      assert.equal(prompt.split(TASK_STARTER_FIELD).length, 2)
+      assert.ok(resources.panel[starter.fieldLabelKey.replace('panel.', '')])
+      assert.ok(resources.panel[starter.fieldPlaceholderKey.replace('panel.', '')])
+    }
+  }
+})
 
 test('task starters map three product prompts to their conversation skills', () => {
   assert.deepEqual(

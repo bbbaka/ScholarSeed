@@ -1,14 +1,31 @@
 import type { OfficeFontCache, OfficeFontCatalog } from './fonts.ts'
+import type {
+  PdfeIterationEdit,
+  PdfeIterationSaveResult,
+  PdfeIterationSnapshot,
+} from './iterations.ts'
 import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from './window.ts'
 
 export const PDFE_CHANNEL = {
   boot: 'scholarseed:pdfe-boot',
   open: 'scholarseed:pdfe-open',
+  copyScene: 'scholarseed:pdfe-copy-scene',
+  captureScreenshot: 'scholarseed:pdfe-capture-screenshot',
+  screenshotCaptured: 'scholarseed:pdfe-screenshot-captured',
+  restart: 'scholarseed:pdfe-restart',
+  copyScreenshot: 'scholarseed:pdfe-copy-screenshot',
+  closeScreenshot: 'scholarseed:pdfe-close-screenshot',
   reload: 'scholarseed:pdfe-reload',
   hide: 'scholarseed:pdfe-hide',
   dock: 'scholarseed:pdfe-dock',
   dockChanged: 'scholarseed:pdfe-dock-changed',
   resize: 'scholarseed:pdfe-resize',
+  diagnostics: 'scholarseed:pdfe-diagnostics',
+  copyDiagnostics: 'scholarseed:pdfe-copy-diagnostics',
+  diagnosticEnvironment: 'scholarseed:pdfe-diagnostic-environment',
+  iterations: 'scholarseed:pdfe-iterations',
+  saveIteration: 'scholarseed:pdfe-save-iteration',
+  iterationDraft: 'scholarseed:pdfe-iteration-draft',
 } as const
 export const PDFE_SURFACE_PARAMETER = 'pdfe'
 export const PREVIEW_INSTANCE_PARAMETER = 'previewInstance'
@@ -18,6 +35,38 @@ export const PDFE_SHORTCUT = 'F8'
 export const PDFE_CONTROL_SIZE = { width: 420, height: 840, minWidth: 320, minHeight: 520 } as const
 export const PDFE_DOCK_STEP = 20
 export const PDFE_RESET_PATH = '/__preview/reset'
+export const PDFE_DIAGNOSTIC_PATH = '/__preview/diagnostics'
+export const PDFE_DIAGNOSTIC_HEADER = 'x-scholarseed-pdfe-diagnostic-access'
+export const PDFE_DIAGNOSTIC_ENV = 'SCHOLARSEED_PDFE_DIAGNOSTIC_ACCESS'
+export const PDFE_RESTART_ENV = 'SCHOLARSEED_PDFE_RESTART'
+export const PDFE_RESTART_EXIT = 75
+export type PdfeScreenshot = { id: number; bytes: Uint8Array }
+export const PDFE_DIAGNOSTIC_BUDGET = {
+  records: 100,
+  recordBytes: 1024,
+  fullRecordBytes: 8 * 1024,
+  bytes: 24 * 1024,
+} as const
+export const PDFE_UNMATCHED_ROUTE = '(unmatched)'
+export const PDFE_ENVIRONMENT_DIAGNOSTICS = [
+  'download-blocked',
+  'external-navigation-blocked',
+  'navigation-blocked',
+  'settings-navigation-unavailable',
+  'virtual-roots-synchronized',
+  'virtual-roots-rejected',
+  'virtual-directory-picker-opened',
+  'virtual-directory-picker-cancelled',
+  'virtual-directory-picker-selected',
+  'permissions-normal',
+  'permissions-failed',
+  'permissions-delayed',
+] as const
+export type PdfeEnvironmentDiagnostic = (typeof PDFE_ENVIRONMENT_DIAGNOSTICS)[number]
+
+export function isPdfeEnvironmentDiagnostic(value: unknown): value is PdfeEnvironmentDiagnostic {
+  return PDFE_ENVIRONMENT_DIAGNOSTICS.some((code) => code === value)
+}
 export const PDFE_REQUEST_TIMEOUT_MS = 10_000
 const PDFE_SCHEMA = 1
 const PDFE_ID = /^[a-zA-Z0-9_-]{1,96}$/
@@ -27,6 +76,12 @@ export type PdfeDock = 'docked' | 'detached'
 export interface PdfeTarget {
   pageId: string
   sceneId: string
+}
+
+const PDFE_SCENE_REFERENCE_HEADER = 'PDFE-SCENE/1'
+
+export function formatPdfeSceneReference({ pageId, sceneId }: PdfeTarget): string {
+  return PDFE_SCENE_REFERENCE_HEADER + '\n' + JSON.stringify({ pageId, sceneId })
 }
 export interface PdfePage {
   id: string
@@ -49,10 +104,25 @@ export interface PdfeNativeBridge {
   fullscreen: boolean
   dock: PdfeDock
   openScenario: (target: PdfeTarget) => Promise<void>
+  copyScene?: (target: PdfeTarget, locale?: 'zh' | 'en') => Promise<void>
+  captureScreenshot?: () => Promise<void>
+  onScreenshotCaptured?: (callback: (capture: PdfeScreenshot) => void) => () => void
+  restart?: () => Promise<void>
+  copyScreenshot?: (id: number, bytes: Uint8Array) => Promise<void>
+  closeScreenshot?: (id: number) => Promise<void>
   reload: () => Promise<void>
   hideControls: () => Promise<void>
   setDock: (mode: PdfeDock) => Promise<void>
   resizeControls: (width: number) => Promise<void>
+  readDiagnostics?: () => Promise<PdfeDiagnosticStatus>
+  copyDiagnostics?: (generation: string, sequences: readonly number[]) => Promise<void>
+  readIterations?: () => Promise<PdfeIterationSnapshot>
+  saveIteration?: (revision: string, edit: PdfeIterationEdit) => Promise<PdfeIterationSaveResult>
+  setIterationDraft?: (dirty: boolean, locale: 'zh' | 'en') => Promise<void>
+  recordDiagnosticEnvironment: (
+    generation: string,
+    code: PdfeEnvironmentDiagnostic
+  ) => Promise<void>
   onDockChange: (callback: (mode: PdfeDock) => void) => () => void
   onFullscreenChange: (callback: (value: boolean) => void) => () => void
   requestOfficeFontAccess: () => Promise<boolean>
@@ -60,6 +130,54 @@ export interface PdfeNativeBridge {
   readOfficeFont: (id: string) => Promise<Uint8Array>
   readOfficeFontCache: (fingerprint: string) => Promise<OfficeFontCache | null>
   writeOfficeFontCache: (fingerprint: string, cache: OfficeFontCache) => Promise<void>
+}
+
+export interface PdfeDiagnosticStatus {
+  generation: string
+  pageId: string | null
+  scene: string
+  requests: PdfeHttpDiagnostic[]
+  streams: PdfeStreamDiagnostic[]
+  unhandled: string[]
+  dropped: number
+  environment: PdfeEnvironmentDiagnostic[]
+}
+
+type DiagnosticJson =
+  string | number | boolean | null | DiagnosticJson[] | { [key: string]: DiagnosticJson }
+
+export interface PdfeDiagnosticDetail {
+  state: 'available' | 'empty' | 'omitted' | 'redacted' | 'truncated'
+  fields?: Record<string, string | number>
+  json?: DiagnosticJson
+}
+
+export interface PdfeHttpDiagnostic {
+  sequence: number
+  method: string
+  path: string
+  status: number | null
+  durationMs: number
+  outcome: 'completed' | 'aborted'
+  parameters: PdfeDiagnosticDetail
+  body: PdfeDiagnosticDetail
+  response: PdfeDiagnosticDetail
+}
+
+export interface PdfeStreamDiagnostic {
+  sequence: number
+  at: number
+  connection: number
+  kind: 'session' | 'notification' | 'file'
+  phase: 'open' | 'write' | 'closed' | 'interrupted'
+  path: string
+  subject?: string
+  cursor?: number
+  reconnectOf?: number
+  reconnectable?: boolean
+  event?: string
+  eventSequence?: number
+  heartbeats?: number
 }
 
 export function pdfeWindowWidth(available: number): number {

@@ -1,4 +1,5 @@
-import { type Joining } from './Joining'
+import { JoinedLabel, type Joining } from './Joining'
+import { PaperThumbnail } from './Thumbnail'
 import type { HeldFulltextSource } from './join'
 import { paperJoinKey, type JoinDestination } from './hierarchy'
 import { searchFailureMessageKey } from './error'
@@ -17,6 +18,9 @@ import {
   Badge,
   Button,
   Checkbox,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
   EllipsisText,
   IconButton,
   EmptyState,
@@ -39,6 +43,7 @@ import {
 import type { BibtexSave } from './export'
 
 export interface SearchActions {
+  continueInAI?: (query: string, papers: LiteratureSearchPaper[]) => void
   projectId?: string
   receipts: ReadonlyMap<string, JoinDestination>
   Join: React.ComponentType<Omit<React.ComponentProps<typeof Joining>, 'ports'>>
@@ -84,8 +89,8 @@ interface ResultColumnLayout {
 
 const RESULT_COLUMN_SETS: Record<ResultColumnSet, ResultColumnLayout> = {
   search: {
-    grid: 'grid-cols-[42px_minmax(360px,2fr)_minmax(280px,1.35fr)]',
-    minWidth: SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX,
+    grid: 'grid-cols-[auto_minmax(0,1fr)]',
+    minWidth: 0,
     access: false,
     detailAbstract: false,
   },
@@ -375,6 +380,9 @@ function LibraryStatusNotice({
 function SearchContents({
   papers,
   status,
+  query,
+  output,
+  elapsed,
   error,
   warning,
   streamError,
@@ -385,6 +393,7 @@ function SearchContents({
 }: LiteratureSearchViewProps): React.JSX.Element {
   const { t } = useTranslation('literature')
   const columns = RESULT_COLUMN_SETS[columnSet]
+  const cardLayout = columnSet === 'search'
   const { toast } = useToast()
   const [exporting, setExporting] = useState(false)
   const actions = useContext(SearchContext)!
@@ -416,6 +425,8 @@ function SearchContents({
   const running = status === 'pending' || status === 'running'
   const failureKey = searchFailureMessageKey(error)
   const failureMessage = failureKey ? t(failureKey) : undefined
+  const processText = [output, failureMessage].filter(Boolean).join('\n')
+  const [processOpen, setProcessOpen] = useState(false)
   const reviewResults = papers.some((paper) => paper.decision && paper.decision !== 'candidate')
   const shown = useMemo(
     () => visibleSearchPapers(papers, access, sort, decision),
@@ -456,6 +467,15 @@ function SearchContents({
     >
       <div className="isolate flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] px-[var(--vds-space-5)] py-[var(--vds-space-2)]">
+          {actions.continueInAI && (
+            <Button
+              variant="secondary"
+              disabled={!papers.length}
+              onClick={() => actions.continueInAI?.(query ?? '', picked.length ? picked : papers)}
+            >
+              {t('discovery.continueAI')}
+            </Button>
+          )}
           <div className="ml-auto flex min-h-[var(--vds-control-height-md)] shrink-0 items-center gap-[var(--vds-space-3)]">
             <Button
               variant="secondary"
@@ -505,6 +525,42 @@ function SearchContents({
           ) : null}
           {warning ? <Alert tone="warning" description={warning} /> : null}
 
+          <Collapsible
+            className="!gap-[var(--vds-space-4)]"
+            open={processOpen}
+            onOpenChange={setProcessOpen}
+          >
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="!h-auto min-h-[var(--vds-control-height-md)] !w-fit max-w-full !justify-start gap-[var(--vds-space-2)] !rounded-[var(--vds-radius-4)] !border-[var(--vds-border-default)] !px-[var(--vds-space-3)] !py-[var(--vds-space-2)]"
+              >
+                <span className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
+                  {running ? <Spinner size="sm" /> : <Icon name="sparkle" size={15} />}
+                  <span className="font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
+                    {t('search.output')}
+                  </span>
+                  {elapsed ? (
+                    <span className="font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]">
+                      {t('search.elapsed', { elapsed })}
+                    </span>
+                  ) : null}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className={`inline-flex shrink-0${processOpen ? ' rotate-180' : ''}`}
+                >
+                  <Icon name="chevron-down" size={14} />
+                </span>
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="[--vds-collapsible-content-padding:var(--vds-space-2)]">
+              <pre className="m-0 max-h-[var(--vds-layout-session-output-max-height)] overflow-y-auto whitespace-pre-wrap break-words font-[family-name:var(--vds-font-code)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-secondary)]">
+                {processText || (running ? t('search.starting') : t('search.noOutput'))}
+              </pre>
+            </CollapsibleContent>
+          </Collapsible>
           {!running && papers.length === 0 ? (
             <EmptyState
               title={t('search.noResults')}
@@ -539,7 +595,7 @@ function SearchContents({
                         }
                       />
                       <span>{t('search.literature')}</span>
-                      <span>{t('search.reason')}</span>
+                      {!cardLayout && <span>{t('search.reason')}</span>}
                       {columns.abstract ? <span>{t('search.abstract')}</span> : null}
                       {columns.access ? (
                         <span>
@@ -579,20 +635,35 @@ function SearchContents({
                               }
                             />
                           </span>
-                          <div className="min-w-0 font-[var(--vds-fw-regular)]">
-                            <strong className="line-clamp-2 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                          <div
+                            className={
+                              cardLayout
+                                ? 'min-w-0 flex-1'
+                                : 'min-h-0 min-w-0 max-h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+                            }
+                          >
+                            <strong className="line-clamp-2 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]">
                               <PaperSourceLink paper={paper}>{paper.title}</PaperSourceLink>
                             </strong>
                             <PaperMetadata paper={paper} />
-                            <div className="mt-[var(--vds-space-2)] flex flex-wrap items-center gap-[var(--vds-space-2)] empty:hidden">
+                            {cardLayout && (paper.reason || paper.abstract) && (
+                              <p className="my-[var(--vds-space-3)] line-clamp-3 break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-library-search-line-height)] text-[var(--vds-text-secondary)]">
+                                {paper.reason || paper.abstract}
+                              </p>
+                            )}
+                            <div className="mt-[var(--vds-space-2)] flex flex-wrap items-center gap-[var(--vds-space-2)]">
                               {!isSaved(paper) && (
                                 <LibraryStatusNotice status={libraryStatuses?.[paper.paper_id]} />
                               )}
                             </div>
                           </div>
-                          <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
-                            {paper.reason || t('search.detailUnknown')}
-                          </p>
+                          {cardLayout ? (
+                            <PaperThumbnail paper={paper} />
+                          ) : (
+                            <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
+                              {paper.reason || t('search.detailUnknown')}
+                            </p>
+                          )}
                           {columns.abstract ? (
                             <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
                               {paper.abstract || t('search.detailUnknown')}

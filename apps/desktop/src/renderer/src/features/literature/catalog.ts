@@ -10,6 +10,21 @@ import type {
   LiteratureTagFacet,
 } from '../../contracts/literature'
 import type { NoteEditingSession, NoteEditorSnapshot } from './editor'
+import type { DiscoveryPeriod } from './recommendations'
+
+interface DiscoverySnapshot {
+  paperId: string | null
+  topic: string
+  period: DiscoveryPeriod
+  scroll: number
+}
+
+const DEFAULT_DISCOVERY: DiscoverySnapshot = {
+  paperId: null,
+  topic: 'all',
+  period: 'week',
+  scroll: 0,
+}
 
 interface LiteraturePanelSnapshot {
   counts: LiteratureCounts
@@ -18,6 +33,9 @@ interface LiteraturePanelSnapshot {
 }
 
 interface CatalogueState {
+  discovery: DiscoverySnapshot
+  showRecommendations: boolean
+  discoveryInterests: string[]
   projectId: string | null
   query: LiteratureQuery
   selected: string[]
@@ -51,6 +69,9 @@ export interface ImportDestination {
 const DEFAULT_QUERY: LiteratureQuery = { attachment: 'any', order: 'desc', sort: 'created_at' }
 
 let state: CatalogueState = {
+  discovery: { ...DEFAULT_DISCOVERY },
+  showRecommendations: false,
+  discoveryInterests: [],
   projectId: null,
   query: { ...DEFAULT_QUERY },
   selected: [],
@@ -78,6 +99,7 @@ const update = (patch: Partial<CatalogueState>): void => {
 }
 const replaceQuery = (query: LiteratureQuery): void =>
   update({
+    showRecommendations: false,
     query: { ...DEFAULT_QUERY, project_id: state.projectId ?? undefined, ...query },
     selected: [],
     focusedId: null,
@@ -121,6 +143,15 @@ export function useCatalogue(): CatalogueState {
 }
 
 export const catalogue = {
+  discovery(patch: Partial<DiscoverySnapshot>): void {
+    update({ discovery: { ...state.discovery, ...patch } })
+  },
+  interests(values: string[]): void {
+    update({ discoveryInterests: [...values] })
+  },
+  recommendations(): void {
+    update({ showRecommendations: true })
+  },
   noteEditorSnapshot(itemId: string): NoteEditorSnapshot | null {
     return noteEditors.get(itemId)?.getSnapshot() ?? null
   },
@@ -159,6 +190,7 @@ export const catalogue = {
       saved
         ? {
             ...saved,
+            showRecommendations: false,
             importRequest: null,
             itemsLoadedAt: 0,
             panelLoadedAt: 0,
@@ -166,6 +198,8 @@ export const catalogue = {
             reload: state.reload + 1,
           }
         : {
+            discovery: { ...DEFAULT_DISCOVERY },
+            showRecommendations: false,
             projectId,
             query: { ...DEFAULT_QUERY, project_id: projectId ?? undefined },
             selected: [],
@@ -186,6 +220,7 @@ export const catalogue = {
   },
   query(patch: Partial<LiteratureQuery>): void {
     update({
+      showRecommendations: false,
       query: {
         ...state.query,
         ...patch,
@@ -215,6 +250,7 @@ export const catalogue = {
    */
   filter(patch: Partial<LiteratureQuery>): void {
     update({
+      showRecommendations: false,
       query: {
         ...state.query,
         ...patch,
@@ -251,18 +287,21 @@ export const catalogue = {
    * 过去: 交给 store, 列表挂载后自己消费, 由面板负责把标签切回列表。
    */
   requestImport(source: string, destination: ImportDestination | null = null): void {
-    update({ importRequest: { source, destination, token: (state.importRequest?.token ?? 0) + 1 } })
+    update({
+      showRecommendations: false,
+      importRequest: { source, destination, token: (state.importRequest?.token ?? 0) + 1 },
+    })
   },
   consumeImportRequest(): void {
     if (state.importRequest === null) return
     update({ importRequest: null })
   },
   focus(focusedId: string | null): void {
-    update({ focusedId, focusedAttachmentId: null })
+    update({ showRecommendations: false, focusedId, focusedAttachmentId: null })
     recordOpen(focusedId)
   },
   focusAttachment(focusedId: string, focusedAttachmentId: string): void {
-    update({ focusedId, focusedAttachmentId })
+    update({ showRecommendations: false, focusedId, focusedAttachmentId })
     recordOpen(focusedId)
   },
   items(items: LiteratureSummary[]): void {

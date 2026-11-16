@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { WebNavigationContext } from '../../contracts/navigation'
 import type { LiteratureSearchEvent, LiteratureSearchTask } from '../../contracts/literature'
 import { useApp } from '../../store'
-import { EmptyState, Spinner } from '../../components/ui'
+import { EmptyState, Spinner, useToast } from '../../components/ui'
+import { LiteratureConversationContext } from '../../contracts/navigation'
 import { JoinLibraryBatch, JoinLibraryMenu } from './JoinMenu'
 import { SearchSurface, type LiteratureSearchViewProps } from './Matches'
 import { saveBibtex } from './export'
@@ -209,7 +210,7 @@ function ScopedLiteratureSearchTab({
       key={task.id}
       taskId={task.id}
       query={task.query}
-      columnSet="search"
+      columnSet="candidates"
       papers={papers}
       status={task.status}
       output={visibleSearchOutput(task.output)}
@@ -222,13 +223,48 @@ function ScopedLiteratureSearchTab({
 }
 
 export function LiteratureSearchView(props: LiteratureSearchViewProps): React.JSX.Element {
-  const { state } = useApp()
+  const { state, act } = useApp()
+  const { t } = useTranslation('literature')
+  const continuation = useContext(LiteratureConversationContext)
+  const continuing = useRef(false)
+  const { toast } = useToast()
   const openWebPage = React.useContext(WebNavigationContext)
   const receipts = useJoinedPapers()
   return (
     <SearchSurface
       {...props}
       actions={{
+        continueInAI: async (query, papers) => {
+          if (continuation && props.taskId) {
+            if (continuing.current) return
+            continuing.current = true
+            try {
+              const sessionId = await continuation(
+                props.taskId,
+                papers.map((paper) => paper.paper_id)
+              )
+              act.openSession(sessionId)
+            } catch {
+              toast({ title: t('panel.error.searchFailed'), tone: 'error' })
+            } finally {
+              continuing.current = false
+            }
+            return
+          }
+          act.startPanelDraft({
+            composerText:
+              t('discovery.continuePrompt', { query }) +
+              (papers.length
+                ? '\n\n' +
+                  papers
+                    .map(
+                      (paper, index) =>
+                        `${index + 1}. ${paper.title}\n${paper.doi ? `https://doi.org/${paper.doi}` : (paper.url ?? '')}`
+                    )
+                    .join('\n\n')
+                : ''),
+          })
+        },
         projectId: state.homeSelectedProjectId ?? undefined,
         receipts,
         Join: JoinLibraryMenu,

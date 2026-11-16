@@ -1,3 +1,4 @@
+import { MemoryUpdates } from '../memory/Updates'
 import React from 'react'
 import { ListTodo } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -71,21 +72,50 @@ export function TaskOverviewBody({ children }: { children: React.ReactNode }): R
   )
 }
 
-export function TaskOverview({ menuItem = false }: { menuItem?: boolean }): React.JSX.Element {
-  const { state } = useApp()
-  return <Overview key={activeThread(state).id} menuItem={menuItem} />
+export function TaskOverview({
+  menuItem = false,
+  children,
+  icon = <ListTodo />,
+  openForSessionId,
+}: {
+  menuItem?: boolean
+  children?: React.ReactNode
+  icon?: React.ReactNode
+  openForSessionId?: string | null
+}): React.JSX.Element {
+  return (
+    <Overview menuItem={menuItem} icon={icon} openForSessionId={openForSessionId}>
+      {children}
+    </Overview>
+  )
 }
 
-function Overview({ menuItem }: { menuItem: boolean }): React.JSX.Element {
+function Overview({
+  menuItem,
+  children,
+  icon,
+  openForSessionId,
+}: {
+  menuItem: boolean
+  children?: React.ReactNode
+  icon: React.ReactNode
+  openForSessionId?: string | null
+}): React.JSX.Element {
   const { state, act } = useApp()
   const thread = activeThread(state)
   const [directory, setDirectory] = React.useState<SessionArtifact | null>(null)
+  React.useEffect(() => setDirectory(null), [thread.sessionId])
   return (
     <>
       <OverviewPanel
+        sessionId={thread.sessionId}
+        openForSessionId={openForSessionId}
         menuItem={menuItem}
+        icon={icon}
         onOpenDirectory={thread.sessionId ? setDirectory : undefined}
-      />
+      >
+        {children}
+      </OverviewPanel>
       {directory && thread.sessionId && (
         <ArtifactDirectory
           artifact={directory}
@@ -101,12 +131,23 @@ function Overview({ menuItem }: { menuItem: boolean }): React.JSX.Element {
 function OverviewPanel({
   menuItem,
   onOpenDirectory,
+  children,
+  icon,
+  sessionId,
+  openForSessionId,
 }: {
   menuItem: boolean
   onOpenDirectory?: (artifact: SessionArtifact) => void
+  children?: React.ReactNode
+  icon: React.ReactNode
+  sessionId?: string | null
+  openForSessionId?: string | null
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const [open, setOpen] = React.useState(false)
+  React.useEffect(() => {
+    setOpen(Boolean(sessionId && sessionId === openForSessionId))
+  }, [sessionId, openForSessionId])
   const host = React.useContext(OverviewLayoutContext)
   const reserved = Boolean(host?.reserveSpace && host.target && !menuItem)
   const setHostOpen = host?.setOpen
@@ -197,6 +238,7 @@ function OverviewPanel({
         viewportProps={{ 'data-testid': 'task-overview-scroll' }}
       >
         <div ref={bindBoundary} className="px-[var(--vds-space-2)] py-[var(--vds-space-3)]">
+          {children}
           <SessionArtifacts
             boundaryRef={boundaryRef}
             onOpenDirectory={onOpenDirectory}
@@ -218,6 +260,7 @@ function OverviewPanel({
               }}
             />
           </section>
+          <MemoryUpdates sessionId={sessionId} />
         </div>
       </ScrollArea>
     </OverviewActionsContext.Provider>
@@ -232,7 +275,7 @@ function OverviewPanel({
             size="md"
             label={t('overview.title')}
             title={undefined}
-            icon={<ListTodo />}
+            icon={icon}
             aria-pressed={open}
             aria-expanded={open}
             aria-controls={panelId}
@@ -259,7 +302,7 @@ function OverviewPanel({
     return (
       <DropdownMenuSub open={open} onOpenChange={changeOpen}>
         <DropdownMenuSubTrigger data-testid="task-overview-toggle">
-          <ListTodo />
+          {icon}
           {t('overview.title')}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -286,7 +329,7 @@ function OverviewPanel({
             size="md"
             title={undefined}
             label={t('overview.title')}
-            icon={<ListTodo />}
+            icon={icon}
             aria-pressed={open}
             data-testid="task-overview-toggle"
           />

@@ -15,7 +15,7 @@ import { PREPARATION_SUPERSEDED_ERROR } from '../../preparation'
 import { useApp } from '../../store'
 
 /** Model parameter scoped to a session; remembered separately for new conversations. */
-export function useEffort() {
+export function useEffort(active = true) {
   const { t } = useTranslation('conversation')
   const { state, set, patchThread, getSnapshot, rememberEffort, runModelSelection } = useApp()
   const sessionId = state.activeSession
@@ -49,7 +49,7 @@ export function useEffort() {
   const unavailable = !model || (!reasoningSupported && !value)
 
   React.useEffect(() => {
-    if (!sessionId || pending) return
+    if (!active || !sessionId || pending) return
     let alive = true
     void getSessionModel(sessionId).then((result) => {
       if (!alive || !result?.runtime || switching.current) return
@@ -60,7 +60,7 @@ export function useEffort() {
     return () => {
       alive = false
     }
-  }, [sessionId, running, modelKey, pending])
+  }, [active, sessionId, running, modelKey, pending])
 
   async function select(effort: string): Promise<void> {
     if (switching.current || !efforts.includes(effort)) return

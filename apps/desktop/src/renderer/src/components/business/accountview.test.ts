@@ -1,6 +1,44 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import * as account from './accountview.ts'
+import { MENU_ACTION, parseAccountMenuView } from '../../../../menu.ts'
+import { DEFAULT_RENDERER_PREFERENCES, PREFERENCE_THEMES } from '../../../../preferences.ts'
+
+test('appearance precedes language, defaults to light and validates all theme choices', () => {
+  const base = {
+    alias: null,
+    avatar: '',
+    credits: { phase: 'ready', value: null, unlimited: false },
+    availableActions: [MENU_ACTION.appearance, MENU_ACTION.language],
+    logoutBusy: false,
+    logoutError: null,
+    locale: 'zh-CN',
+  }
+  assert.equal(DEFAULT_RENDERER_PREFERENCES.theme, 'light')
+  for (const theme of [undefined, ...PREFERENCE_THEMES]) {
+    const view = parseAccountMenuView({ ...base, ...(theme ? { theme } : {}) })
+    const items = account.accountMenuItems(view)
+    const appearance = items.find((item) => item.id === MENU_ACTION.appearance)
+    assert.equal(appearance?.kind, 'submenu')
+    if (appearance?.kind !== 'submenu') throw new Error('Missing appearance submenu')
+    assert.ok(
+      items.indexOf(appearance) < items.findIndex((item) => item.id === MENU_ACTION.language)
+    )
+    assert.deepEqual(
+      appearance.items.map((item) => item.kind === 'action' && item.label),
+      ['浅色', '深色', '系统']
+    )
+    const selected = appearance.items.filter((item) => item.kind === 'action' && item.checked)
+    assert.equal(selected.length, 1)
+    assert.equal(
+      selected[0].kind === 'action' &&
+        selected[0].value.kind === 'choice' &&
+        selected[0].value.value,
+      theme ?? 'light'
+    )
+  }
+  assert.throws(() => parseAccountMenuView({ ...base, theme: 'invalid' }))
+})
 import * as menu from '../../../../menu.ts'
 import { SYSTEM_LANGUAGE_MODE } from '../../../../preferences.ts'
 

@@ -5,6 +5,31 @@ import test from 'node:test'
 import { catalogue } from './catalog.ts'
 import type { LiteratureSummary } from '../../contracts/literature'
 
+test('discovery reading state survives remounts and remains scoped to its library', () => {
+  catalogue.scope(null)
+  catalogue.discovery({ paperId: 'flip', topic: 'astro', period: 'month', scroll: 240 })
+  catalogue.scope('discovery-other-project')
+  assert.equal(catalogue.getSnapshot().discovery.paperId, null)
+  catalogue.scope(null)
+  assert.deepEqual(catalogue.getSnapshot().discovery, {
+    paperId: 'flip',
+    topic: 'astro',
+    period: 'month',
+    scroll: 240,
+  })
+  catalogue.discovery({ paperId: null, topic: 'all', period: 'week', scroll: 0 })
+})
+
+test('custom discovery interests survive library navigation without changing filters', () => {
+  catalogue.scope(null)
+  catalogue.interests(['蛋白质', 'ai'])
+  catalogue.navigate({ q: 'saved paper' })
+  catalogue.recommendations()
+  assert.deepEqual(catalogue.getSnapshot().discoveryInterests, ['蛋白质', 'ai'])
+  assert.equal(catalogue.getSnapshot().query.q, 'saved paper')
+  catalogue.interests([])
+})
+
 test('reader updates shared rows without clearing project projections or triggering detail reloads', () => {
   const original = {
     id: 'reader-paper',
@@ -127,6 +152,41 @@ const OVERVIEW_COUNTS = {
   unread: 0,
   without_fulltext: 0,
 }
+
+test('recommendation preview preserves the library working state', () => {
+  catalogue.scope(null)
+  catalogue.query({ q: 'retained search' })
+  catalogue.items([{ id: 'retained-paper' }] as never)
+  catalogue.select('retained-paper', true)
+  const before = catalogue.getSnapshot()
+  catalogue.recommendations()
+  const after = catalogue.getSnapshot()
+  assert.equal(after.showRecommendations, true)
+  assert.deepEqual(after.query, before.query)
+  assert.deepEqual(after.items, before.items)
+  assert.deepEqual(after.selected, before.selected)
+  assert.equal(after.reload, before.reload)
+})
+
+test('library navigation and import leave recommendation preview', () => {
+  catalogue.scope(null)
+  for (const navigate of [
+    () => catalogue.navigate(),
+    () => catalogue.query({ q: 'paper' }),
+    () => catalogue.filter({ tag_id: ['tag'] }),
+    () => catalogue.requestImport('local'),
+    () => catalogue.focus('paper'),
+    () => catalogue.focusAttachment('paper', 'attachment'),
+    () => catalogue.scope('discovery-project'),
+    () => catalogue.scope(null),
+  ]) {
+    catalogue.recommendations()
+    navigate()
+    assert.equal(catalogue.getSnapshot().showRecommendations, false)
+  }
+  catalogue.consumeImportRequest()
+  catalogue.navigate()
+})
 
 test('scope remount keeps cached rows for instant paint but revalidates them', () => {
   catalogue.scope(null)

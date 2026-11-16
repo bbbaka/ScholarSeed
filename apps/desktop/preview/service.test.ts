@@ -5,6 +5,11 @@ import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { createPreviewService } from './service.ts'
+import { PREVIEW_REVISION } from './revisions.ts'
+import type { HistoryResult } from '../src/renderer/src/api.ts'
+import { parseForkOrigin } from '../src/renderer/src/features/assistant/fork.ts'
+import { createPreviewDiagnosticAccess } from './access.ts'
+import { PDFE_DIAGNOSTIC_HEADER, PDFE_DIAGNOSTIC_PATH, PREVIEW_INSTANCE_PARAMETER, type PdfeDiagnosticStatus } from '../src/pdfe.ts'
 import { NOTIFICATION_IDLE_MS, NOTIFICATION_PATH, notificationFrame } from '../src/notifications.ts'
 import { readReading } from '../src/renderer/src/components/business/comprehension.ts'
 import {
@@ -16,7 +21,6 @@ import { DEFAULT_PROJECT_LAYOUT } from '../src/layout.ts'
 import { resolveContentResponse } from '../src/renderer/src/app/api/content.ts'
 import { PROJECT_NAME_MAX } from '../src/renderer/src/contracts/content.ts'
 import { ProjectSimulation } from './project.ts'
-import { PREVIEW_DIAGNOSTIC_LIMIT } from './diagnostics.ts'
 import { PREVIEW_DOCUMENTS } from './documents.ts'
 import {
   resolveDocumentLocation,
@@ -316,7 +320,7 @@ test('non-fork Mock sessions expose null origin and no display children and reje
     assert.equal((await runtime.request(route, instance, {})).status, 501)
     const after = (await runtime.request('/__preview/state', instance)).body
     for (const field of ['projects', 'sessions', 'preferences', 'account']) assert.deepEqual(after[field], before[field])
-    assert.deepEqual(after.unhandled, ['POST ' + childrenRoute, 'POST ' + route])
+    assert.equal(after.unhandled, undefined)
   } finally {
     await runtime.close()
   }
@@ -333,7 +337,7 @@ test('empty Mock marketplace exposes no labels without forwarding registry reque
     }
     const market = await runtime.request('/api/capabilities/skills/marketplace', instance)
     assert.deepEqual(market.body.items, [])
-    assert.deepEqual((await runtime.request('/__preview/state', instance)).body.unhandled, [])
+    assert.equal((await runtime.request('/__preview/state', instance)).body.unhandled, undefined)
   } finally {
     await runtime.close()
   }
@@ -1225,6 +1229,7 @@ test('runtime preparation receipts are instance scoped, idempotent and never con
   const runtime = await fixture()
   const instance = 'runtime-preparation'
   try {
+    const initialState = (await runtime.request('/__preview/state', instance)).body
     const health = (await runtime.request('/api/healthz', instance)).body
     const model = (await runtime.request('/api/serve/models', instance)).body.current_model
     const body = { request_id: randomUUID(), model_id: model, service_instance_id: health.service_instance_id, persist_default: false }
@@ -1241,7 +1246,7 @@ test('runtime preparation receipts are instance scoped, idempotent and never con
     assert.equal(rejected.status, 200)
     assert.equal(rejected.body.state, 'rejected')
     const state = (await runtime.request('/__preview/state', instance)).body
-    assert.ok(state.sessions.every((session: { turns: number }) => session.turns === 0))
+    assert.deepEqual(state.sessions, initialState.sessions)
     await runtime.request('/__preview/reset', instance, { scene: 'chat' })
     assert.equal((await runtime.request(endpoint + '/' + body.request_id, instance)).status, 404)
   } finally {
@@ -4264,6 +4269,11 @@ test('scene scoped HTTP search feeds real literature consumers without network o
       501
     )
     assert.deepEqual(await loadSearchLibraryStatus(tasks[0].result!.papers, 'preview-project'), [])
+    const closeResponse = await originalFetch(runtime.base + `/api/literature/searches/${tasks[0].id}`, {
+      method: 'DELETE', headers: { 'x-preview-instance': 'other' },
+    })
+    assert.equal(closeResponse.status, 200)
+    assert.equal((await listLiteratureSearches()).length, 1)
     const papers = tasks[0].result!.papers.map((paper) => ({ id: paper.paper_id }))
     assert.deepEqual(
       (await runtime.request('/api/literature/searches/result-status', 'search-http', { papers }))
@@ -4280,6 +4290,11 @@ test('scene scoped HTTP search feeds real literature consumers without network o
       ).status,
       422
     )
+    const deleted = await originalFetch(runtime.base + `/api/literature/searches/${tasks[0].id}`, {
+      method: 'DELETE', headers: { 'x-preview-instance': 'search-http' },
+    })
+    assert.equal(deleted.status, 200)
+    assert.deepEqual(await listLiteratureSearches(), [])
     await runtime.request('/__preview/reset', 'search-http', { scene: 'page-home' })
     assert.deepEqual(await listLiteratureSearches(), [])
     assert.equal(
@@ -5427,8 +5442,50 @@ test('notification SSE preserves instance identity, comment heartbeats and owned
   }
 })
 
-async function fixture(initialScene?: string) {
-  const service = createPreviewService()
+test('message revision creates an independent snapshot, is idempotent and preserves its source', async () => {
+  const runtime = await fixture('conversation-editing')
+  try {
+    const sourcePath = '/api/serve/history/preview-session'
+    const before = (await runtime.request(sourcePath)).body as HistoryResult
+    const users = before.turns.filter(turn => turn.kind === 'user')
+    const selected = users[1]
+    const route = `/api/serve/sessions/preview-session/${PREVIEW_REVISION.action}`
+    const request = { itemId: selected.item_id, turnId: selected.turn_id, text: '改为面向硕士生，比较中文支持。', references: [{ type: 'file', id: 'new.pdf', title: '新材料.pdf', path: '/preview/new.pdf' }], requestId: randomUUID() }
+    const created = await runtime.request(route, 'first', request)
+    assert.equal(created.status, 200)
+    assert.notEqual(created.body.sessionId, 'preview-session')
+    assert.deepEqual((await runtime.request(route, 'first', request)).body, created.body)
+    assert.equal((await runtime.request(route, 'first', { ...request, text: '冲突内容' })).status, 409)
+    const childPath = `/api/serve/history/${created.body.sessionId}`
+    const child = (await runtime.request(childPath)).body as HistoryResult
+    assert.deepEqual(child.turns.slice(0, 2), before.turns.slice(0, 2))
+    assert.equal(child.turns[2].text, request.text)
+    assert.equal(child.turns[2].refs?.[0].title, '新材料.pdf')
+    assert.equal(child.turns.some(turn => turn.text === users[2].text), false)
+    assert.deepEqual((await runtime.request(sourcePath)).body, before)
+    const origin = parseForkOrigin((await runtime.request(`/api/serve/sessions/${created.body.sessionId}/fork-origin`)).body.origin)
+    assert.equal(origin?.source_session_id, 'preview-session')
+    assert.equal(origin?.anchor?.item_id, selected.item_id)
+    const childRoute = `/api/serve/sessions/${created.body.sessionId}/${PREVIEW_REVISION.action}`
+    const again = { ...request, itemId: created.body.itemId, turnId: created.body.turnId, requestId: randomUUID() }
+    assert.equal((await runtime.request(childRoute, 'first', again)).status, 409)
+    await runtime.request(`/api/serve/sessions/${created.body.sessionId}/interrupt`, 'first', {})
+    const grandchild = await runtime.request(childRoute, 'first', again)
+    assert.equal(grandchild.status, 200)
+    const grandOrigin = (await runtime.request(`/api/serve/sessions/${grandchild.body.sessionId}/fork-origin`)).body.origin
+    assert.equal(grandOrigin.source_session_id, created.body.sessionId)
+    assert.deepEqual((await runtime.request(sourcePath)).body, before)
+    assert.equal((await runtime.request(route, 'first', { ...request, requestId: randomUUID(), text: '   ' })).status, 422)
+    assert.equal((await runtime.request(route, 'first', { ...request, requestId: randomUUID(), itemId: users[0].item_id, turnId: users[0].turn_id })).status, 422)
+    assert.equal((await runtime.request(route, 'first', { ...request, requestId: randomUUID(), itemId: 'missing' })).status, 422)
+    assert.equal((await runtime.request(route, 'first', { ...request, requestId: randomUUID(), itemId: users[2].item_id, turnId: users[2].turn_id })).status, 200)
+  } finally {
+    runtime.close()
+  }
+})
+
+async function fixture(initialScene?: string, authorizeDiagnostics?: Parameters<typeof createPreviewService>[0]) {
+  const service = createPreviewService(authorizeDiagnostics)
   const server = createServer((request, response) => {
     if (initialScene) {
       const referer = new URL(request.headers.referer ?? 'http://preview.local')
@@ -5448,6 +5505,13 @@ async function fixture(initialScene?: string) {
     base,
     server,
     dispose: () => service.dispose(),
+    async readDiagnostics(instance: string, secret: string) {
+      const url = new URL(PDFE_DIAGNOSTIC_PATH, base)
+      url.searchParams.set(PREVIEW_INSTANCE_PARAMETER, instance)
+      const response = await fetch(url, { headers: { [PDFE_DIAGNOSTIC_HEADER]: secret } })
+      if (!response.ok) throw new Error('Diagnostic fixture read failed: ' + response.status)
+      return { status: response.status, body: await response.json() as PdfeDiagnosticStatus }
+    },
     async request(path: string, instance = 'first', body?: unknown) {
       const response = await fetch(base + path, {
         headers: {
@@ -5465,6 +5529,63 @@ async function fixture(initialScene?: string) {
     },
   }
 }
+
+test('diagnostic reads reject public or cross-instance access and do not create or record requests', async () => {
+  const access = createPreviewDiagnosticAccess()
+  const first = access.grant('first')
+  const second = access.grant('second')
+  const runtime = await fixture(undefined, access.authorize)
+  const read = (instance: string, secret?: string) => {
+    const url = new URL(PDFE_DIAGNOSTIC_PATH, runtime.base)
+    url.searchParams.set(PREVIEW_INSTANCE_PARAMETER, instance)
+    return fetch(url, {
+      headers: {
+        referer: runtime.base + '/?' + url.searchParams,
+        origin: runtime.base,
+        ...(secret ? { [PDFE_DIAGNOSTIC_HEADER]: secret } : {}),
+      },
+    })
+  }
+  const status = async (instance: string, secret?: string) => {
+    const response = await read(instance, secret)
+    return { status: response.status, body: await response.json() }
+  }
+  try {
+    assert.equal((await status('first')).status, 403)
+    assert.equal((await status('first', second.secret)).status, 403)
+    assert.equal((await status('first', first.secret)).status, 404)
+    assert.equal((await status('first', first.secret)).status, 404)
+    const created = await runtime.request('/__preview/state', 'first')
+    const initial = await status('first', first.secret)
+    assert.deepEqual(initial, {
+      status: 200,
+      body: { pageId: 'page-home', scene: created.body.scene, generation: created.body.generation, requests: [], streams: [], unhandled: [], dropped: 0 },
+    })
+    assert.deepEqual(await status('first', first.secret), initial)
+    assert.equal((await status('second', second.secret)).status, 404)
+    await runtime.request('/__preview/reset', 'first', { scene: 'home-browse', pageId: 'page-home' })
+    for (const path of ['/api/serve/attention', '/api/resource/import-jobs', '/api/resource/finalizations?session_id=preview-session',
+      `/api/serve/projects/${PREVIEW_PROJECT_ID}/schedules/groups`]) {
+      assert.equal((await runtime.request(path, 'first')).status, 200, path)
+    }
+    assert.equal((await runtime.request('/api/unregistered/private-segment?token=private-token', 'first')).status, 501)
+    const matched = await status('first', first.secret)
+    assert.deepEqual(matched.body.requests.map((record: { path: string }) => record.path), [
+      '/api/serve/attention', '/api/resource/import-jobs', '/api/resource/finalizations',
+      '/api/serve/projects/:projectId/schedules/groups', '(unmatched)',
+    ])
+    assert.deepEqual(matched.body.unhandled, ['GET (unmatched)'])
+    assert.doesNotMatch(JSON.stringify(matched.body), /private-segment|private-token|preview-project/)
+    await runtime.request('/__preview/reset', 'first', { scene: 'home-no-tasks', pageId: 'page-home' })
+    const current = await status('first', first.secret)
+    assert.equal(current.body.scene, 'home-no-tasks')
+    assert.notEqual(current.body.generation, initial.body.generation)
+    first.revoke()
+    assert.equal((await status('first', first.secret)).status, 403)
+  } finally {
+    runtime.close()
+  }
+})
 
 async function feedbackClient(
   runtime: Awaited<ReturnType<typeof fixture>>,
@@ -6158,7 +6279,7 @@ test('skill settings consume isolated typed inventory, documents, toggles and de
   try {
     const initial = await runtime.request('/api/capabilities/skills?surface=settings')
     assert.equal(initial.status, 200)
-    assert.equal(initial.body.skills.length, 3)
+    assert.equal(initial.body.skills.length, 6)
     const user = initial.body.skills.find(
       (skill: { group: string; dependency_status: string }) =>
         skill.group === 'user' && skill.dependency_status === 'ready'
@@ -6259,7 +6380,9 @@ test('document scenes seed the real owned project workspace open without changin
 })
 
 test('project creation exposes real 202 operation states and the renderer resolver polls without replaying mutation', async () => {
-  const runtime = await fixture()
+  const access = createPreviewDiagnosticAccess()
+  const grant = access.grant('default')
+  const runtime = await fixture(undefined, access.authorize)
   const previousWindow = globalThis.window
   try {
     const directory = await runtime.request(
@@ -6324,7 +6447,7 @@ test('project creation exposes real 202 operation states and the renderer resolv
         .state,
       'succeeded'
     )
-    const diagnostics = (await runtime.request('/__preview/state', 'default')).body.diagnostics
+    const diagnostics = (await runtime.readDiagnostics('default', grant.secret)).body
     assert.equal(
       diagnostics.requests.filter(
         (request: { method: string; path: string }) =>
@@ -6332,13 +6455,17 @@ test('project creation exposes real 202 operation states and the renderer resolv
       ).length,
       1
     )
-    assert.ok(
-      diagnostics.requests.some(
-        (request: { method: string; path: string }) =>
-          request.method === 'GET' &&
-          request.path === `/api/content/operations/${submitted.operation}`
-      )
-    )
+    const creation = diagnostics.requests.find(request => request.method === 'POST' && request.path === '/api/content/projects')!
+    assert.equal(creation.status, 202)
+    assert.equal(creation.body.state, 'redacted')
+    assert.equal(creation.response.fields?.state, 'queued')
+    assert.ok(diagnostics.requests.some(request =>
+      request.method === 'GET' && request.path === '/api/content/operations/:operationId' &&
+      request.parameters.fields?.operation === creation.response.fields?.operation &&
+      request.response.fields?.state === 'succeeded'
+    ))
+    assert.ok(!JSON.stringify(diagnostics).includes(submitted.operation))
+    assert.ok(!JSON.stringify(diagnostics).includes('Async project'))
   } finally {
     Object.assign(globalThis, { window: previousWindow })
     runtime.close()
@@ -6448,11 +6575,28 @@ test('disposing a project simulation cancels pending effects, not just the publi
   assert.throws(() => projects.operation(operation), /content_operation_unknown/)
 })
 
-test('service diagnostics use bounded request summaries and existing event ledgers without private content', async () => {
-  const runtime = await fixture()
+test('service diagnostics observe only real stream writes without private content or cross-generation leakage', async () => {
+  const access = createPreviewDiagnosticAccess()
+  const grant = access.grant('first')
+  const other = access.grant('second')
+  const runtime = await fixture(undefined, access.authorize)
+  const controller = new AbortController()
+  const subscribe = async (path: string) => {
+    const url = new URL(path, runtime.base)
+    url.searchParams.set(PREVIEW_INSTANCE_PARAMETER, 'first')
+    const response = await fetch(url, { signal: controller.signal })
+    assert.equal(response.status, 200)
+    const reader = response.body!.getReader()
+    await reader.read()
+    return reader
+  }
   try {
     const privateText = 'private diagnostic payload should never be summarized'
     const session = (await runtime.request('/api/serve/sessions/open', 'first', {})).body.session_id
+    const notifications = await subscribe(NOTIFICATION_PATH)
+    const fileEvents = await subscribe('/api/content/events?project=preview-project')
+    const sessionEvents = await subscribe(`/api/serve/sessions/${session}/events`)
+    assert.ok(!(await runtime.readDiagnostics('first', grant.secret)).body.streams.some(event => event.kind === 'file' && event.phase === 'write'))
     await runtime.request(`/api/serve/sessions/${session}/turns?token=private-query`, 'first', {
       input: [{ type: 'text', text: privateText }],
     })
@@ -6461,42 +6605,34 @@ test('service diagnostics use bounded request summaries and existing event ledge
       path: 'diagnostic.md',
       content: privateText,
     })
-    await new Promise((resolve) => setTimeout(resolve, 180))
-    const first = (await runtime.request('/__preview/state')).body.diagnostics
+    await waitPreviewSession(runtime, 'first', session, 'completed')
+    const first = (await runtime.readDiagnostics('first', grant.secret)).body
     assert.ok(
       first.requests.some(
-        (request: { method: string; path: string; status: number }) =>
+        request =>
           request.method === 'POST' &&
-          request.path === `/api/serve/sessions/${session}/turns` &&
+          request.path === '/api/serve/sessions/:sessionId/turns' &&
           request.status === 200
       )
     )
-    assert.ok(first.events.some((event: { type: string }) => event.type === 'turn_completed'))
-    assert.ok(
-      first.files.some(
-        (event: { path: string; kind: string }) =>
-          event.path === 'diagnostic.md' && event.kind === 'modified'
-      )
-    )
+    assert.ok(first.streams.some(event => event.kind === 'session' && event.phase === 'write' && event.event === 'turn_completed'))
+    assert.ok(first.streams.some(event => event.kind === 'file' && event.phase === 'write' && event.event === 'modified'))
+    assert.ok(first.streams.some(event => event.kind === 'notification' && event.phase === 'write' && event.event === 'ready'))
     assert.equal(JSON.stringify(first).includes(privateText), false)
     assert.equal(JSON.stringify(first).includes('private-query'), false)
-    assert.ok(
-      first.requests.length <= PREVIEW_DIAGNOSTIC_LIMIT &&
-        first.events.length <= PREVIEW_DIAGNOSTIC_LIMIT &&
-        first.files.length <= PREVIEW_DIAGNOSTIC_LIMIT
-    )
-    assert.deepEqual(
-      (await runtime.request('/__preview/state', 'second')).body.diagnostics.events,
-      []
-    )
+    assert.equal(JSON.stringify(first).includes('diagnostic.md'), false)
+    assert.equal(JSON.stringify(first).includes(session), false)
+    assert.deepEqual(Object.keys((await runtime.request('/__preview/state')).body.diagnostics), ['roots'])
+    await runtime.request('/__preview/state', 'second')
+    assert.deepEqual((await runtime.readDiagnostics('second', other.secret)).body.streams, [])
     await runtime.request('/__preview/reset', 'first', { scene: 'chat' })
-    const reset = (await runtime.request('/__preview/state')).body.diagnostics
-    assert.deepEqual(reset.events, [])
-    assert.equal(
-      reset.requests.some((request: { path: string }) => request.path.includes(session)),
-      false
-    )
+    await Promise.all([notifications.cancel(), fileEvents.cancel(), sessionEvents.cancel()])
+    const reset = (await runtime.readDiagnostics('first', grant.secret)).body
+    assert.deepEqual(reset.streams, [])
+    assert.deepEqual(reset.requests, [])
+    assert.notEqual(reset.generation, first.generation)
   } finally {
+    controller.abort()
     runtime.close()
   }
 })

@@ -35,6 +35,7 @@
     "src/main/history.ts",
     "src/main/history-record.ts",
     "src/main/inspector.ts",
+    "src/main/iterations.ts",
     "src/main/journal.ts",
     "src/main/localization.ts",
     "src/main/navigation.ts",

@@ -223,6 +223,18 @@ test('browser settings simulation uses instance-scoped typed requests without en
   assert.equal(calls.length, 1)
 })
 
+test('paper PDF opt-in enables only the isolated browser bridge', () => {
+  const bridge = createPreviewBridge({
+    instance: 'paper-pdf-bridge', scene: 'paper-discovery-curated', pageId: 'page-discovery',
+    preferences: defaultRendererPreferences('zh'),
+    simulation: { browser: { seed: 'empty', surface: { seed: 'empty', paperPdf: true } } },
+    request: async () => Response.json({ ok: false }),
+  })
+  assert.equal(bridge.browserEnabled, true)
+  assert.equal(bridge.menu, undefined)
+  assert.equal(bridge.browser.page, undefined)
+})
+
 test('browser surface bridge projects only simulated snapshots and commands without exposing native helpers', async () => {
   const calls: { path: string; instance: string | null; body: unknown }[] = []
   const snapshot = { tabs: [], activeTabId: null, automation: { enabled: false, port: null } }

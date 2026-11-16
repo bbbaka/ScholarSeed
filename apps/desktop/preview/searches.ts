@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { LiteratureSearchPaper, LiteratureSearchTask } from '../src/renderer/src/contracts/literature.ts'
 import { WEB_SEARCH_CANDIDATE_LIMIT } from '../src/renderer/src/features/resources/search.ts'
+import { CURATED_PAPERS } from '../src/renderer/src/features/literature/recommendations.ts'
+import { REASONING_SEARCH } from './fixtures/reasoning.ts'
 
 export const PREVIEW_SEARCH = {
   hostname: 'example.invalid',
@@ -35,6 +37,50 @@ export class PreviewSearches {
 
   listLiterature(): { items: LiteratureSearchTask[] } {
     return { items: structuredClone(this.tasks) }
+  }
+
+  deleteLiterature(id: string): void {
+    const index = this.tasks.findIndex(task => task.id === id)
+    if (index >= 0) this.tasks.splice(index, 1)
+  }
+
+  conversation(body: unknown): { query: string; answer: string } {
+    if (!record(body) || typeof body.task_id !== 'string' || !Array.isArray(body.paper_ids) || !body.paper_ids.every(id => typeof id === 'string')) throw new PreviewSearchError(422, 'preview_search_invalid')
+    const task = this.tasks.find(task => task.id === body.task_id)
+    if (!task?.result) throw new PreviewSearchError(404, 'preview_search_unknown')
+    const ids = new Set(body.paper_ids)
+    const papers = task.result.papers.filter(paper => !ids.size || ids.has(paper.paper_id))
+    if (!papers.length || (ids.size && papers.length !== ids.size)) throw new PreviewSearchError(422, 'preview_search_paper_unknown')
+    return {
+      query: task.query,
+      answer: papers.map((paper, index) => [
+        `### ${index + 1}. ${paper.title}`,
+        [paper.authors.join(', '), paper.venue, paper.year].filter(Boolean).join(' · '),
+        paper.abstract,
+        paper.reason,
+        paper.doi ? `https://doi.org/${paper.doi}` : paper.url,
+      ].filter(Boolean).join('\n\n')).join('\n\n'),
+    }
+  }
+
+  createLiterature(body: unknown): LiteratureSearchTask {
+    if (!record(body) || typeof body.query !== 'string' || !body.query.trim()) throw new PreviewSearchError(422, 'preview_search_invalid')
+    const query = body.query.trim()
+    const terms = query.toLocaleLowerCase().split(/\s+/)
+    const sample = REASONING_SEARCH.queries.some(value => value === query.toLocaleLowerCase())
+    const papers = sample ? REASONING_SEARCH.papers.map(item => {
+      const paper = CURATED_PAPERS.find(paper => paper.id === item.id)
+      if (!paper) throw new PreviewSearchError(500, 'preview_search_fixture_missing')
+      return { ...structuredClone(paper.metadata), reason: /\p{Script=Han}/u.test(query) ? item.reason : item.reasonEn }
+    }) : CURATED_PAPERS.filter(paper => {
+      const text = [paper.metadata.title, paper.metadata.doi, paper.metadata.arxiv_id, ...paper.keywords, ...Object.values(paper.titles), paper.reading.zh.summary, paper.reading.en.summary].join(' ').toLocaleLowerCase()
+      return terms.every(term => text.includes(term))
+    }).map(paper => structuredClone(paper.metadata))
+    const created = Date.now() / 1_000
+    const result = { search_summary: { query, total_rounds: 1, total_queries: 1, pool_size: papers.length, selected_count: papers.length, subtopics: [], coverage_assessment: 'PDFE mock catalog search; no external retrieval.' }, papers }
+    const task: LiteratureSearchTask = { id: randomUUID(), query, created_at: created, completed_at: created, status: papers.length ? 'completed' : 'empty', last_seq: 0, output: JSON.stringify(result), error: null, result }
+    this.tasks.unshift(task)
+    return structuredClone(task)
   }
 
   resultStatus(body: unknown): { items: Record<string, { library: 'absent' }> } {

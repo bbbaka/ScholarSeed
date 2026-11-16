@@ -1,5 +1,5 @@
 ---
-id: guide-plugin-developers-zh
+id: guide-plugin-developers
 title: Plugin 概览
 doc_type: design
 category: skills

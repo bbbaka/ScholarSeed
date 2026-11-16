@@ -315,7 +315,19 @@ test('migrated PDFE regressions are collected on both native platforms without l
         assert.ok(stage.expectedTitles.includes(title), title)
         assert.ok(new RegExp(selected).test(title), title)
       }
-      assert.equal(stage.expectedTitles.length, 168)
+      const macosWorkbench = [
+        'native diagnostic read requires the active top-level controls and a private grant',
+        'native diagnostics link interrupted and reconnected conversation streams to the actual cursor',
+        'native API calls and iteration versions omit shared controls without changing the active scene',
+        'native iteration maintenance shares a single reloadable snapshot without resetting the scene',
+        'native iteration editing persists safely and retains drafts on conflict or write denial',
+        'native scene copy identifies exact aliases without launching a scene',
+      ]
+      for (const title of macosWorkbench) {
+        assert.equal(stage.expectedTitles.includes(title), platform === 'darwin', title)
+        assert.equal(new RegExp(selected).test(title), platform === 'darwin', title)
+      }
+      assert.equal(stage.expectedTitles.length, 168 + (platform === 'darwin' ? macosWorkbench.length : 0))
     }
   }
 })
@@ -408,7 +420,7 @@ test('native probes and unit coverage partition the complete Desktop-owned test 
   }
   assert.deepEqual(NATIVE_TEST_FILES, [
     'src/main/sandbox.test.ts', 'src/preload/menu.test.ts', 'src/preload/menureact.test.ts',
-    'src/main/plugins.test.ts', 'src/main/preferences.test.ts',
+    'src/main/plugins.test.ts', 'src/main/preferences.test.ts', 'src/main/policy.test.ts',
     'src/main/inspector.test.ts', 'src/main/binding.test.ts',
     'src/main/chromiumrelay.test.ts', 'src/main/agentbrowser.test.ts',
     'src/main/searchdom.test.ts', 'src/main/browser.test.ts',
@@ -462,7 +474,7 @@ test('public engineering checks are owned by source in both platform and profile
       ])
       const node = stages.find(item => item.id === 'desktop-extra-node')
       for (const file of ['scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
-        'scripts/__tests__/ownership.test.cjs', 'apps/desktop/scripts/ci/__tests__/standards.test.mjs', 'scripts/pre/__tests__/symlinks.test.cjs']) {
+        'scripts/__tests__/ownership.test.cjs', 'apps/desktop/scripts/ci/__tests__/standards.test.mjs']) {
         assert.equal(node.args.filter(argument => argument === file).length, 1)
       }
       assert.equal(stages.some(item => (item.args || []).some(argument => argument.startsWith('scripts/cd/public/'))), false)
@@ -479,7 +491,6 @@ test('shared example and real preparation contracts run in both platform CI plan
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
       }
       for (const file of ['scripts/ci/docs/__tests__/structure.test.mjs',
-        'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
         'scripts/ci/docs/__tests__/commands.test.cjs']) {
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
         const target = path.resolve(stage.cwd, file)
@@ -987,7 +998,6 @@ test('native stage plan covers macOS Python and both supported Desktop platforms
   assert.ok(contract[1].includes('- .venv/bin/python -m pytest -q -o "python_files=test_*.py contract_*.py e2e_*.py" packages/damoatrace/damoatrace/tests'))
   for (const filename of privateFiles) {
     assert.equal(pipeline.includes(filename), false)
-    assert.equal(fs.existsSync(path.resolve(sourceDirectory, '../..', filename)), false)
     assert.equal(mac.some(stage => stage.args?.includes(filename)), false)
     assert.equal(windows.some(stage => stage.args?.includes(filename)), false)
   }

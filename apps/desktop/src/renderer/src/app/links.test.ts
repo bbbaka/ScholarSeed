@@ -8,6 +8,24 @@ test('web navigation distinguishes a policy rejection from an unexpected failure
   assert.equal(webPageErrorKey(new Error('unexpected')), 'browser:errors.operation_failed')
 })
 
+test('literature links preserve the originating navigation scope when opened', async () => {
+  let revealed: unknown
+  await openWebPage('https://doi.org/10.1234/example', {
+    available: true,
+    navigationView: 'literature',
+    dispatch: async () => ({ ok: true, snapshot: { activeTabId: 'paper' } }) as never,
+    reveal: (options) => {
+      revealed = options
+    },
+  })
+  assert.deepEqual(revealed, {
+    preserveProject: true,
+    browserPageId: 'paper',
+    browserPageOwned: true,
+    navigationView: 'literature',
+  })
+})
+
 test('web navigation opens the returned browser page without replacing the conversation', async () => {
   const calls: unknown[] = []
   await openWebPage('https://www.wikipedia.org/', {

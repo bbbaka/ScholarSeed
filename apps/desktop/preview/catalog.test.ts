@@ -136,8 +136,9 @@ test('literature catalogue preserves empty requirements and declares library, de
 test('conversation catalog declares flow and transport policies independently of the service scene identifier', () => {
   const page = PREVIEW_CATALOG.find((page) => page.id === 'page-conversation')!
   assert.deepEqual(
-    page.scenarios.map((scene) => scene.simulation?.conversation),
+    page.scenarios.filter((scene) => !scene.simulation?.schedules).map((scene) => scene.simulation?.conversation),
     [
+      { mode: 'streaming', stream: 'interruptible', editing: true },
       { mode: 'chat', references: true, mixedReferences: true, draftReferences: true },
       { mode: 'chat', references: true, mixedReferences: true },
       { mode: 'chat', references: true },
@@ -248,7 +249,7 @@ test('catalog covers current navigation without duplicating retired placeholders
   )
   assert.deepEqual(
     PREVIEW_CATALOG.filter((page) => page.category === 'settings').map((page) => page.entry),
-    SETTINGS_PAGES.filter((page) => page !== 'model-settings' && page !== 'skills')
+    SETTINGS_PAGES.filter((page) => page !== 'model-settings' && page !== 'skills' && page !== 'general')
   )
 })
 
@@ -318,6 +319,7 @@ test('conversation catalog includes streaming, tools, approval, cancellation and
   assert.deepEqual(
     page.scenarios.map((scenario) => scenario.id),
     [
+      'conversation-editing',
       'conversation-context-draft',
       'conversation-context-mixed',
       'conversation-references',
@@ -336,6 +338,8 @@ test('conversation catalog includes streaming, tools, approval, cancellation and
       'conversation-review-fulltext-pending',
       'conversation-review-fulltext-authorized',
       'conversation-review-fulltext-rejected',
+      'schedules-created',
+      'schedules-clarification',
     ]
   )
   assert.deepEqual(
@@ -354,6 +358,23 @@ test('conversation catalog includes streaming, tools, approval, cancellation and
     PREVIEW_CATALOG.find((page) => page.id === 'surface-approval')!.scenarios[0],
     page.scenarios.find((scenario) => scenario.id === 'conversation-approval')
   )
+})
+
+test('schedule and discovery previews keep their real owners and explicit isolated policies', () => {
+  const schedules = PREVIEW_CATALOG.find(page => page.id === 'page-schedules')!
+  assert.equal(schedules.target?.view, 'schedules')
+  assert.deepEqual(schedules.scenarios.map(scene => scene.simulation?.schedules), [
+    'sample', 'empty', 'sample', 'read-failure', 'empty', 'empty', 'empty',
+  ])
+  const archived = PREVIEW_CATALOG.find(page => page.id === 'page-resource')!
+    .scenarios.find(scene => scene.id === 'schedules-archived-runs')
+  assert.equal(archived?.simulation?.schedules, 'archived')
+  const created = PREVIEW_CATALOG.find(page => page.id === 'page-conversation')!
+    .scenarios.find(scene => scene.id === 'schedules-created')
+  assert.equal(created?.simulation?.schedules, 'created')
+  const discovery = PREVIEW_CATALOG.find(page => page.id === 'page-discovery')!
+    .scenarios.find(scene => scene.id === 'paper-discovery-curated')
+  assert.equal(discovery?.simulation?.paperDiscovery, true)
 })
 
 test('permission scenarios disclose unavailable snapshots, bounded loading and persistent query failure', () => {

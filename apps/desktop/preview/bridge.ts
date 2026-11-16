@@ -268,6 +268,7 @@ export function createPreviewBridge(
   }
   return {
     ...browser,
+    browserEnabled: options.simulation?.browser?.surface?.paperPdf === true,
     ...(options.simulation?.browser
       ? {
           browserAdvancedSettingsEnabled: true,

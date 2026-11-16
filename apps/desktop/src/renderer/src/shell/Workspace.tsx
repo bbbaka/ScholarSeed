@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   GripVertical,
+  ListTodo,
   Maximize2,
   MessageCircle,
   Minimize2,
@@ -173,7 +174,10 @@ export function Workspace({
     lastDocument.current = state.activeTab
     lastProject.current = state.homeSelectedProjectId
   }, [state.activeTab, state.homeSelectedProjectId, workspaceTabCount, set])
-  const conversationFull = layout.conversationFull
+  const projectPage = featureRegistry.panels.find(
+    (panel) => panel.slot === 'project-page' && panel.key === state.mainView
+  )
+  const conversationFull = !projectPage && layout.conversationFull
   const fullSurface = layout.full || conversationFull
   const [canSplit, setCanSplit] = useState(true)
   const [openingSplit, setOpeningSplit] = useState<{
@@ -590,6 +594,33 @@ export function Workspace({
       event.currentTarget.releasePointerCapture(event.pointerId)
   }
   const navigation = featureRegistry.panels.find((panel) => panel.slot === 'navigation')
+  const projectActions = featureRegistry.panels
+    .filter((panel) => panel.slot === 'project-action')
+    .map((panel) => <React.Fragment key={panel.key}>{panel.render()}</React.Fragment>)
+  const conversationHeader = featureRegistry.panels
+    .filter((panel) => panel.slot === 'conversation-header')
+    .map((panel) => <React.Fragment key={panel.key}>{panel.render()}</React.Fragment>)
+  const conversationTitlePrefix = featureRegistry.panels
+    .filter((panel) => panel.slot === 'conversation-title-prefix')
+    .map((panel) => <React.Fragment key={panel.key}>{panel.render()}</React.Fragment>)
+  const renderConversationTitle = (children: React.ReactNode): React.ReactNode =>
+    featureRegistry.panels
+      .filter((panel) => panel.slot === 'conversation-title')
+      .reduce((content, panel) => panel.render({ children: content }), children)
+  const conversationOverview = featureRegistry.panels
+    .filter((panel) => panel.slot === 'conversation-overview')
+    .map((panel) => <React.Fragment key={panel.key}>{panel.render()}</React.Fragment>)
+  const [overviewSessionId, requestOverviewOpen] = useState<string | null>(null)
+  const renderReadonlyNotice = (children: React.ReactNode): React.ReactNode =>
+    featureRegistry.panels
+      .filter((panel) => panel.slot === 'conversation-readonly-notice')
+      .reduce((content, panel) => panel.render({ children: content }), children)
+  const conversationOverviewIcon = featureRegistry.panels
+    .filter((panel) => panel.slot === 'conversation-overview-icon')
+    .reduce<React.ReactNode>(
+      (content, panel) => panel.render({ children: content, requestOverviewOpen }),
+      <ListTodo />
+    )
   const openNewTab = (): void => {
     const tab = newProjectTab(state.homeSelectedProjectId)
     workspace.openPageTab(tab.id)
@@ -660,7 +691,11 @@ export function Workspace({
   )
   const workspaceControls = (
     <span className="contents">
-      {!floating && <TaskOverview />}
+      {!floating && (
+        <TaskOverview icon={conversationOverviewIcon} openForSessionId={overviewSessionId}>
+          {conversationOverview}
+        </TaskOverview>
+      )}
       {conversationFull && (
         <>
           {minimizeControl}
@@ -842,330 +877,335 @@ export function Workspace({
         onWidthChangeEnd={onNavigationWidthChange}
         leftPanel={
           <div ref={navigationRef} className="flex h-full min-h-0 flex-col">
-            {navigation?.render()}
+            {navigation?.render({
+              actions: projectActions,
+              sessionGroups: featureRegistry.sessionGroups,
+            })}
           </div>
         }
         rightPanel={
-          <div
-            className="relative flex h-full min-h-0 min-w-0 flex-1"
-            ref={hostRef}
-            data-testid="workspace-floating-area"
-          >
-            <ResizablePanel
-              animated
-              className={cx(
-                String.raw`h-full min-h-0 min-w-0 flex-1 [&>.vds-resizable-split\_\_panel--left]:!overflow-visible [&>.vds-resizable-split\_\_handle]:!mx-[calc(var(--vds-resizable-handle-active-size)/-2)]`,
-                fullSurface &&
-                  String.raw`[&>.vds-resizable-split\_\_panel--left]:!w-0 [&>.vds-resizable-split\_\_panel--left]:!min-w-0 [&>.vds-resizable-split\_\_panel--left]:!flex-none [&>.vds-resizable-split\_\_panel--right]:!w-full [&>.vds-resizable-split\_\_panel--right]:!flex-1`,
-                !showConversationDivider &&
-                  String.raw`[&>.vds-resizable-split\_\_handle]:!hidden [&>.vds-resizable-split\_\_handle]:pointer-events-none`
-              )}
-              reversed={layout.swapped}
-              leftWidth={`${layout.conversationWidth}px`}
-              resizeEnabled={showConversationDivider}
-              renderHandle={
-                nativeOverlay ? (handle) => <NativeDivider>{handle}</NativeDivider> : undefined
-              }
-              onWidthChangeEnd={(width) =>
-                !layout.full && patch({ conversationWidth: Number.parseFloat(width) })
-              }
-              minLeftWidth={fullSurface ? 0 : CONTENT_MIN_WIDTH}
-              minRightWidth={CONTENT_MIN_WIDTH}
-              maxLeftWidth={CONTENT_MAX_WIDTH}
-              isCollapsed={!workspaceOpen && !conversationFull}
-              leftPanel={
-                <FloatingPortal presentation={conversationPortal} renderOverlay={renderOverlay}>
-                  <div
-                    className={cx(
-                      !floating &&
-                        '[&_.vds-ai-head]:[-webkit-app-region:drag] [&_.vds-ai-head_button]:[-webkit-app-region:no-drag] [&_.vds-ai-head_[tabindex]]:[-webkit-app-region:no-drag]',
-                      conversationFull
-                        ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col'
-                        : layout.full
-                          ? layout.taskTab
-                            ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col pt-[var(--vds-workbench-header-height)]'
-                            : 'absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex h-[var(--vds-workspace-ai-panel-height)] max-h-[var(--vds-workspace-ai-panel-max-height)] w-[var(--vds-workspace-ai-panel-width)] flex-col overflow-hidden rounded-[var(--vds-radius-5)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-3-center)]'
-                          : 'flex h-full min-h-0 w-full flex-col',
-                      floating &&
-                        '!h-auto !w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [&_.vds-ai-panel]:!bg-transparent [&_.vds-ai-composer-host]:!px-0 [&_.vds-ai-head]:!h-[var(--vds-space-10)] [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-[var(--vds-bg-white-default)] [&_.vds-ai-head]:!px-[var(--vds-space-2)] [&_.vds-ai-session]:overflow-hidden [&_.vds-ai-session]:font-[var(--vds-fw-regular)] [&_.vds-ai-session]:text-[length:var(--vds-font-body-lv1)] [&_.vds-ai-head-actions]:gap-0',
-                      floating &&
-                        '[&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!font-[var(--vds-fw-regular)] [&_.vds-ai-session_*]:!font-[var(--vds-fw-regular)]',
-                      floating &&
-                        compact &&
-                        '!overflow-visible [&_.vds-ai-head]:absolute [&_.vds-ai-head]:inset-x-0 [&_.vds-ai-head]:bottom-full [&_.vds-ai-head]:rounded-t-[var(--vds-radius-6)]',
-                      floating &&
-                        compact &&
-                        floatingActive &&
-                        "!rounded-t-none [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:border-[length:var(--vds-border-width-1)] [&_.vds-ai-head]:border-solid [&_.vds-ai-head]:border-[var(--vds-border-default)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!tracking-[var(--vds-letter-spacing-normal)] [&_.vds-ai-session_span]:!text-[var(--vds-text-secondary)] [&_[data-testid=composer-drop-zone]]:!rounded-t-none [&_[data-testid=composer-drop-zone]]:!rounded-b-[var(--vds-radius-6)] [&_[data-testid=composer-drop-zone]]:!border-[length:var(--vds-border-width-1)] [&_[data-testid=composer-drop-zone]]:!border-t-transparent [&_[data-testid=composer-drop-zone]]:!border-[var(--vds-border-default)]",
-                      floating &&
-                        !compact &&
-                        "!overflow-visible !bg-transparent !shadow-none [&_.vds-ai-head]:!relative [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-transparent [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_[data-testid=composer-drop-zone]]:!border-0 [&_[data-testid=composer-drop-zone]]:!rounded-none [&_[data-testid=composer-drop-zone]]:!shadow-none"
-                    )}
-                    data-workbench-motion={
-                      !minimized && !(floating && !compact) ? 'conversation' : undefined
-                    }
-                    data-testid="workspace-conversation"
-                    data-floating-active={floating ? floatingActive : undefined}
-                    data-floating-dock={floating ? floatingDock : undefined}
-                    data-mode={
-                      conversationFull
-                        ? 'fullscreen'
-                        : layout.full
-                          ? layout.taskTab
-                            ? 'tab'
-                            : 'floating'
-                          : 'split'
-                    }
-                    ref={conversationRef}
-                    data-content-collapsed={compact}
-                    style={
-                      minimized || conversationMode === 'hidden' || floatingConfirmation
-                        ? { display: 'none' }
-                        : floating
-                          ? {
-                              ...(position
-                                ? !dragRef.current &&
-                                  !floatingResize.current &&
-                                  !floatingResized.current &&
-                                  floatingMetrics
-                                  ? floatingPanelDockStyle(floatingDock, floatingMetrics)
-                                  : { ...position, right: 'auto', bottom: 'auto' }
-                                : {}),
-                              height: 'auto',
-                              ...(floatingWidth !== null
-                                ? { '--vds-floating-conversation-width': `${floatingWidth}px` }
-                                : {}),
-                            }
-                          : undefined
-                    }
-                    onFocusCapture={(event) => {
-                      floatingInteraction.current = event.nativeEvent
-                      if (floating) setFloatingActive(true)
-                    }}
-                    onPointerDownCapture={(event) => {
-                      floatingInteraction.current = event.nativeEvent
-                      if (floating) setFloatingActive(true)
-                    }}
-                    onPointerDown={startDrag}
-                    onPointerMove={moveDrag}
-                    onPointerUp={stopDrag}
-                    onPointerCancel={stopDrag}
-                    onLostPointerCapture={() => {
-                      if (dragRef.current) {
-                        const bounds = floatingBounds()
-                        if (bounds) setPosition(floatingPanelDockPosition(floatingDock, bounds))
+          projectPage ? (
+            projectPage.render()
+          ) : (
+            <div
+              className="relative flex h-full min-h-0 min-w-0 flex-1"
+              ref={hostRef}
+              data-testid="workspace-floating-area"
+            >
+              <ResizablePanel
+                animated
+                className={cx(
+                  String.raw`h-full min-h-0 min-w-0 flex-1 [&>.vds-resizable-split\_\_panel--left]:!overflow-visible`,
+                  fullSurface &&
+                    String.raw`[&>.vds-resizable-split\_\_panel--left]:!w-0 [&>.vds-resizable-split\_\_panel--left]:!min-w-0 [&>.vds-resizable-split\_\_panel--left]:!flex-none [&>.vds-resizable-split\_\_panel--right]:!w-full [&>.vds-resizable-split\_\_panel--right]:!flex-1`,
+                  !showConversationDivider &&
+                    String.raw`[&>.vds-resizable-split\_\_handle]:!hidden [&>.vds-resizable-split\_\_handle]:pointer-events-none`
+                )}
+                reversed={layout.swapped}
+                leftWidth={`${layout.conversationWidth}px`}
+                resizeEnabled={showConversationDivider}
+                onWidthChangeEnd={(width) =>
+                  !layout.full && patch({ conversationWidth: Number.parseFloat(width) })
+                }
+                minLeftWidth={fullSurface ? 0 : CONTENT_MIN_WIDTH}
+                minRightWidth={CONTENT_MIN_WIDTH}
+                maxLeftWidth={CONTENT_MAX_WIDTH}
+                isCollapsed={!layout.open && !conversationFull}
+                leftPanel={
+                  <FloatingPortal presentation={conversationPortal} renderOverlay={renderOverlay}>
+                    <div
+                      className={cx(
+                        !floating &&
+                          '[&_.vds-ai-head]:[-webkit-app-region:drag] [&_.vds-ai-head_button]:[-webkit-app-region:no-drag] [&_.vds-ai-head_[tabindex]]:[-webkit-app-region:no-drag]',
+                        conversationFull
+                          ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col'
+                          : layout.full
+                            ? layout.taskTab
+                              ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col pt-[var(--vds-workbench-header-height)]'
+                              : 'absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex h-[var(--vds-workspace-ai-panel-height)] max-h-[var(--vds-workspace-ai-panel-max-height)] w-[var(--vds-workspace-ai-panel-width)] flex-col overflow-hidden rounded-[var(--vds-radius-5)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-3-center)]'
+                            : 'flex h-full min-h-0 w-full flex-col',
+                        floating &&
+                          '!h-auto !w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [&_.vds-ai-panel]:!bg-transparent [&_.vds-ai-composer-host]:!px-0 [&_.vds-ai-head]:!h-[var(--vds-space-10)] [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-[var(--vds-bg-white-default)] [&_.vds-ai-head]:!px-[var(--vds-space-2)] [&_.vds-ai-session]:overflow-hidden [&_.vds-ai-session]:font-[var(--vds-fw-regular)] [&_.vds-ai-session]:text-[length:var(--vds-font-body-lv1)] [&_.vds-ai-head-actions]:gap-0',
+                        floating &&
+                          '[&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!font-[var(--vds-fw-regular)] [&_.vds-ai-session_*]:!font-[var(--vds-fw-regular)]',
+                        floating &&
+                          compact &&
+                          '!overflow-visible [&_.vds-ai-head]:absolute [&_.vds-ai-head]:inset-x-0 [&_.vds-ai-head]:bottom-full [&_.vds-ai-head]:rounded-t-[var(--vds-radius-6)]',
+                        floating &&
+                          compact &&
+                          floatingActive &&
+                          "!rounded-t-none [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:border-[length:var(--vds-border-width-1)] [&_.vds-ai-head]:border-solid [&_.vds-ai-head]:border-[var(--vds-border-default)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!tracking-[var(--vds-letter-spacing-normal)] [&_.vds-ai-session_span]:!text-[var(--vds-text-secondary)] [&_[data-testid=composer-drop-zone]]:!rounded-t-none [&_[data-testid=composer-drop-zone]]:!rounded-b-[var(--vds-radius-6)] [&_[data-testid=composer-drop-zone]]:!border-[length:var(--vds-border-width-1)] [&_[data-testid=composer-drop-zone]]:!border-t-transparent [&_[data-testid=composer-drop-zone]]:!border-[var(--vds-border-default)]",
+                        floating &&
+                          !compact &&
+                          "!overflow-visible !bg-transparent !shadow-none [&_.vds-ai-head]:!relative [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-transparent [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_[data-testid=composer-drop-zone]]:!border-0 [&_[data-testid=composer-drop-zone]]:!rounded-none [&_[data-testid=composer-drop-zone]]:!shadow-none"
+                      )}
+                      data-workbench-motion={
+                        !minimized && !(floating && !compact) ? 'conversation' : undefined
                       }
-                      dragRef.current = null
-                    }}
-                  >
-                    {floating &&
-                      !minimized &&
-                      (['left', 'right'] as const).map((edge) => (
-                        <ResizableHandle
-                          key={edge}
-                          appearance="invisible"
-                          aria-label={t('resizeFloatingConversation')}
-                          aria-valuenow={floatingWidth ?? floatingMetrics?.panelWidth}
-                          className={cx(
-                            '!absolute inset-y-0 z-[var(--vds-z-local-control)] !h-auto !w-[var(--vds-resizable-handle-active-size)] !flex-none !bg-transparent touch-none select-none !cursor-ew-resize [-webkit-app-region:no-drag]',
-                            edge === 'left' ? 'left-0 -translate-x-1/2' : 'right-0 translate-x-1/2'
-                          )}
-                          data-testid={`floating-conversation-resize-${edge}`}
-                          onResizeStart={startFloatingResize}
-                          onOffsetChange={(delta) => resizeFloating(edge, delta)}
-                          onResizeEnd={() => {
-                            floatingResize.current = null
-                          }}
-                        />
-                      ))}
-                    <div className={cx('flex min-h-0 flex-1 flex-col', floating && 'isolate')}>
-                      <TaskOverviewLayout
-                        reserveSpace={!floating && (conversationFull || !workspaceOpen)}
-                      >
-                        <AssistantPanel
-                          embedded
-                          hideHeader={layout.full && layout.taskTab && !conversationFull}
-                          headerCollapsed={floating && compact && !floatingActive}
-                          compact={compact}
-                          inlineComposer={floating}
-                          externalConfirmation={floatingConfirmation}
-                          onToggleContent={
-                            floating ? () => changeLayout('toggleFloating') : undefined
-                          }
-                          floatingContent={
-                            floating
-                              ? (floatingContent ?? {
-                                  side: 'top',
-                                  height: 0,
-                                  anchorHeight: 0,
-                                  headingHeight: 0,
-                                })
-                              : undefined
-                          }
-                          workspaceLeading={
-                            floating
-                              ? minimizeControl
-                              : conversationHeaderLeading
-                                ? sidebarToggle
+                      data-testid="workspace-conversation"
+                      data-floating-active={floating ? floatingActive : undefined}
+                      data-floating-dock={floating ? floatingDock : undefined}
+                      data-mode={
+                        conversationFull
+                          ? 'fullscreen'
+                          : layout.full
+                            ? layout.taskTab
+                              ? 'tab'
+                              : 'floating'
+                            : 'split'
+                      }
+                      ref={conversationRef}
+                      data-content-collapsed={compact}
+                      style={
+                        minimized || conversationMode === 'hidden' || floatingConfirmation
+                          ? { display: 'none' }
+                          : floating
+                            ? {
+                                ...(position
+                                  ? !dragRef.current &&
+                                    !floatingResize.current &&
+                                    !floatingResized.current &&
+                                    floatingMetrics
+                                    ? floatingPanelDockStyle(floatingDock, floatingMetrics)
+                                    : { ...position, right: 'auto', bottom: 'auto' }
+                                  : {}),
+                                height: 'auto',
+                                ...(floatingWidth !== null
+                                  ? { '--vds-floating-conversation-width': `${floatingWidth}px` }
+                                  : {}),
+                              }
+                            : undefined
+                      }
+                      onFocusCapture={(event) => {
+                        floatingInteraction.current = event.nativeEvent
+                        if (floating) setFloatingActive(true)
+                      }}
+                      onPointerDownCapture={(event) => {
+                        floatingInteraction.current = event.nativeEvent
+                        if (floating) setFloatingActive(true)
+                      }}
+                      onPointerDown={startDrag}
+                      onPointerMove={moveDrag}
+                      onPointerUp={stopDrag}
+                      onPointerCancel={stopDrag}
+                      onLostPointerCapture={() => {
+                        if (dragRef.current) {
+                          const bounds = floatingBounds()
+                          if (bounds) setPosition(floatingPanelDockPosition(floatingDock, bounds))
+                        }
+                        dragRef.current = null
+                      }}
+                    >
+                      {floating &&
+                        !minimized &&
+                        (['left', 'right'] as const).map((edge) => (
+                          <ResizableHandle
+                            key={edge}
+                            appearance="invisible"
+                            aria-label={t('resizeFloatingConversation')}
+                            aria-valuenow={floatingWidth ?? floatingMetrics?.panelWidth}
+                            className={cx(
+                              '!absolute inset-y-0 z-[var(--vds-z-local-control)] !h-auto !w-[var(--vds-resizable-handle-active-size)] !flex-none !bg-transparent touch-none select-none !cursor-ew-resize [-webkit-app-region:no-drag]',
+                              edge === 'left'
+                                ? 'left-0 -translate-x-1/2'
+                                : 'right-0 translate-x-1/2'
+                            )}
+                            data-testid={`floating-conversation-resize-${edge}`}
+                            onResizeStart={startFloatingResize}
+                            onOffsetChange={(delta) => resizeFloating(edge, delta)}
+                            onResizeEnd={() => {
+                              floatingResize.current = null
+                            }}
+                          />
+                        ))}
+                      <div className={cx('flex min-h-0 flex-1 flex-col', floating && 'isolate')}>
+                        <TaskOverviewLayout
+                          reserveSpace={!floating && (conversationFull || !layout.open)}
+                        >
+                          <AssistantPanel
+                            embedded
+                            hideHeader={layout.full && layout.taskTab && !conversationFull}
+                            headerCollapsed={floating && compact && !floatingActive}
+                            compact={compact}
+                            inlineComposer={floating}
+                            headerContent={conversationHeader}
+                            titlePrefix={conversationTitlePrefix}
+                            renderTitle={renderConversationTitle}
+                            renderReadonlyNotice={renderReadonlyNotice}
+                            externalConfirmation={floatingConfirmation}
+                            onToggleContent={
+                              floating ? () => changeLayout('toggleFloating') : undefined
+                            }
+                            floatingContent={
+                              floating
+                                ? (floatingContent ?? {
+                                    side: 'top',
+                                    height: 0,
+                                    anchorHeight: 0,
+                                    headingHeight: 0,
+                                  })
                                 : undefined
-                          }
-                          workspaceActions={workspaceControls}
-                        />
-                      </TaskOverviewLayout>
+                            }
+                            workspaceLeading={
+                              floating
+                                ? minimizeControl
+                                : conversationHeaderLeading
+                                  ? sidebarToggle
+                                  : undefined
+                            }
+                            workspaceActions={workspaceControls}
+                          />
+                        </TaskOverviewLayout>
+                      </div>
                     </div>
+                  </FloatingPortal>
+                }
+                rightPanel={
+                  <section
+                    className="vds-workbench-pane flex h-full min-h-0 min-w-0 flex-col"
+                    aria-label={t('workspace')}
+                    data-testid="workspace-content"
+                    data-workbench-motion="workspace"
+                    style={conversationFull ? { visibility: 'hidden' } : undefined}
+                  >
+                    <header className="drag relative z-[var(--vds-z-local-control)] flex h-[var(--vds-workbench-header-height)] min-w-0 shrink-0 items-center [background:linear-gradient(to_bottom,transparent_calc(100%_-_var(--vds-navigation-tab-outline-width)),var(--vds-divider-default)_0),var(--vds-bg-gray-default)] [&_button]:[-webkit-app-region:no-drag] [&_svg]:[stroke-width:var(--vds-project-header-icon-stroke)]">
+                      {!conversationHeaderLeading && sidebarToggle}
+                      <div className="drag min-w-0 flex-1 self-stretch">
+                        <TabBar
+                          overflowTarget={tabOverflowTarget}
+                          trailing={(leaf) => <NewTabButton leafId={leaf.id} />}
+                        />
+                      </div>
+                      <div
+                        className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)] pr-[var(--vds-space-4)]"
+                        data-testid="workbench-actions"
+                        data-ob={PROJECT_GUIDE_ANCHORS.workspace}
+                      >
+                        {layout.full && layout.taskTab && !conversationFull && workspaceControls}
+                        {conversationMode === 'hidden' && (
+                          <Tooltip content={t('expandConversation')} side="bottom">
+                            <IconButton
+                              variant="ghostIcon"
+                              size="md"
+                              label={t('expandConversation')}
+                              icon={<MessageCircle />}
+                              onClick={() => patch({ full: false, taskTab: false })}
+                              data-testid="workspace-expand-conversation"
+                            />
+                          </Tooltip>
+                        )}
+                        <span
+                          ref={setTabOverflowTarget}
+                          className="contents"
+                          data-testid="workspace-tab-overflow-slot"
+                        />
+                        <Tooltip content={t(layout.full ? 'exitFull' : 'full')} side="bottom">
+                          <IconButton
+                            variant="ghostIcon"
+                            size="md"
+                            title={undefined}
+                            label={t(layout.full ? 'exitFull' : 'full')}
+                            icon={layout.full ? <Minimize2 /> : <Maximize2 />}
+                            onClick={() => changeLayout('toggleFull')}
+                            data-testid="workspace-full"
+                          />
+                        </Tooltip>
+                        <Tooltip content={t('hideTabs')} side="bottom">
+                          <IconButton
+                            variant="ghostIcon"
+                            size="md"
+                            title={undefined}
+                            label={t('hideTabs')}
+                            icon={<PanelRight />}
+                            aria-expanded={layout.open}
+                            aria-pressed={layout.open}
+                            onClick={() => patch({ open: false, full: false, taskTab: false })}
+                            data-testid="workspace-close"
+                            data-ob={PROJECT_GUIDE_ANCHORS.closeWorkspace}
+                          />
+                        </Tooltip>
+                      </div>
+                    </header>
+                    <div
+                      className="min-h-0 min-w-0 flex-1 overflow-hidden"
+                      hidden={layout.full && layout.taskTab}
+                    >
+                      <Workbench />
+                    </div>
+                  </section>
+                }
+              />
+              {floatingConfirmation && (
+                <FloatingPortal presentation={conversationPortal}>
+                  <div
+                    ref={confirmationRef}
+                    className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex max-h-[calc(100%-var(--vds-workbench-header-height)-var(--vds-space-4))] w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] flex-col"
+                    style={floatingWidth === null ? undefined : { width: floatingWidth }}
+                    data-testid="workspace-floating-confirmation"
+                  >
+                    <PendingHilDock floating />
                   </div>
                 </FloatingPortal>
-              }
-              rightPanel={
-                <section
-                  className="vds-workbench-pane flex h-full min-h-0 min-w-0 flex-col"
-                  aria-label={t('workspace')}
-                  data-testid="workspace-content"
-                  data-workbench-motion="workspace"
-                  style={workspaceVisible ? undefined : { visibility: 'hidden' }}
-                >
-                  <header className="drag relative z-[var(--vds-z-local-control)] flex h-[var(--vds-workbench-header-height)] min-w-0 shrink-0 items-center [background:linear-gradient(to_bottom,transparent_calc(100%_-_var(--vds-navigation-tab-outline-width)),var(--vds-divider-default)_0),var(--vds-bg-gray-default)] [&_button]:[-webkit-app-region:no-drag] [&_svg]:[stroke-width:var(--vds-project-header-icon-stroke)]">
-                    <div className="drag min-w-0 flex-1 self-stretch">
-                      <TabBar
-                        leading={!conversationHeaderLeading && sidebarToggle}
-                        overflowTarget={tabOverflowTarget}
-                        trailing={(leaf) => <NewTabButton leafId={leaf.id} />}
-                        actions={
-                          <div
-                            className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)] pr-[var(--vds-space-4)]"
-                            data-testid="workbench-actions"
-                            data-ob={PROJECT_GUIDE_ANCHORS.workspace}
-                          >
-                            {layout.full &&
-                              layout.taskTab &&
-                              !conversationFull &&
-                              workspaceControls}
-                            {conversationMode === 'hidden' && (
-                              <Tooltip content={t('expandConversation')} side="bottom">
-                                <IconButton
-                                  variant="ghostIcon"
-                                  size="md"
-                                  label={t('expandConversation')}
-                                  icon={<MessageCircle />}
-                                  onClick={() => patch({ full: false, taskTab: false })}
-                                  data-testid="workspace-expand-conversation"
-                                />
-                              </Tooltip>
-                            )}
-                            <span
-                              ref={setTabOverflowTarget}
-                              className="contents"
-                              data-testid="workspace-tab-overflow-slot"
-                            />
-                            <Tooltip content={t(layout.full ? 'exitFull' : 'full')} side="bottom">
-                              <IconButton
-                                variant="ghostIcon"
-                                size="md"
-                                title={undefined}
-                                label={t(layout.full ? 'exitFull' : 'full')}
-                                icon={layout.full ? <Minimize2 /> : <Maximize2 />}
-                                onClick={() => changeLayout('toggleFull')}
-                                data-testid="workspace-full"
-                              />
-                            </Tooltip>
-                            <Tooltip content={t('hideTabs')} side="bottom">
-                              <IconButton
-                                variant="ghostIcon"
-                                size="md"
-                                title={undefined}
-                                label={t('hideTabs')}
-                                icon={<PanelRight />}
-                                aria-expanded={layout.open}
-                                aria-pressed={layout.open}
-                                onClick={() => patch({ open: false, full: false, taskTab: false })}
-                                data-testid="workspace-close"
-                                data-ob={PROJECT_GUIDE_ANCHORS.closeWorkspace}
-                              />
-                            </Tooltip>
-                          </div>
-                        }
-                      />
-                    </div>
-                  </header>
+              )}
+              {minimized && !floatingConfirmation && (
+                <FloatingPortal presentation={conversationPortal}>
                   <div
-                    className="min-h-0 min-w-0 flex-1 overflow-hidden"
-                    hidden={layout.full && layout.taskTab}
-                  >
-                    <Workbench />
-                  </div>
-                </section>
-              }
-            />
-            {floatingConfirmation && (
-              <FloatingPortal presentation={conversationPortal}>
-                <div
-                  ref={confirmationRef}
-                  className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex max-h-[calc(100%-var(--vds-workbench-header-height)-var(--vds-space-4))] w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] flex-col"
-                  style={floatingWidth === null ? undefined : { width: floatingWidth }}
-                  data-testid="workspace-floating-confirmation"
-                >
-                  <PendingHilDock floating />
-                </div>
-              </FloatingPortal>
-            )}
-            {minimized && !floatingConfirmation && (
-              <FloatingPortal presentation={conversationPortal}>
-                <div
-                  ref={bubbleRef}
-                  data-workbench-motion="conversation"
-                  data-workbench-motion-kind="entry"
-                  className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] size-[var(--vds-floating-conversation-entry-size)] z-[var(--vds-z-floating-panel)]"
-                  style={
-                    bubblePosition
-                      ? { ...bubblePosition, right: 'auto', bottom: 'auto' }
-                      : undefined
-                  }
-                >
-                  <IconButton
-                    variant="ghostIcon"
-                    label={t('restoreConversation')}
-                    icon={
-                      <img
-                        src={aiAssistantIcon}
-                        alt=""
-                        draggable={false}
-                        className="size-[var(--vds-icon-10)]"
-                      />
+                    ref={bubbleRef}
+                    data-workbench-motion="conversation"
+                    data-workbench-motion-kind="entry"
+                    className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] size-[var(--vds-floating-conversation-entry-size)] z-[var(--vds-z-floating-panel)]"
+                    style={
+                      bubblePosition
+                        ? { ...bubblePosition, right: 'auto', bottom: 'auto' }
+                        : undefined
                     }
-                    className="!size-[var(--vds-floating-conversation-entry-size)] !min-w-0 touch-none !rounded-[var(--vds-radius-6)] ![border:var(--vds-border-width-1)_solid_var(--vds-border-default)] ![background:var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [--vds-icon-button-glyph:var(--vds-icon-10)]"
-                    data-testid="workspace-restore-conversation"
-                    onPointerDown={startBubbleDrag}
-                    onPointerMove={moveBubbleDrag}
-                    onPointerUp={stopBubbleDrag}
-                    onPointerCancel={stopBubbleDrag}
-                    onLostPointerCapture={() => {
-                      if (bubbleDrag.current) {
-                        const bounds = floatingBounds()
-                        if (bounds)
-                          setBubblePosition(floatingPanelDockPosition(floatingDock, bounds))
+                  >
+                    <IconButton
+                      variant="ghostIcon"
+                      label={t('restoreConversation')}
+                      icon={
+                        <img
+                          src={aiAssistantIcon}
+                          alt=""
+                          draggable={false}
+                          className="size-[var(--vds-icon-10)]"
+                        />
                       }
-                      bubbleDrag.current = null
-                    }}
-                    onClick={(event) => {
-                      if (bubbleDragged.current && event.detail !== 0) return
-                      changeLayout('restoreConversation')
-                    }}
-                  />
-                  {minimizedSession && (
-                    <div className="absolute -right-[var(--vds-radius-3)] -top-[var(--vds-radius-3)]">
-                      <TaskStatus
-                        node={minimizedSession}
-                        unread={sessionNeedsAttention(
-                          reminders.by_session[minimizedSession.id] ?? 0
-                        )}
-                        variant="badge"
-                      />
-                    </div>
-                  )}
-                </div>
-              </FloatingPortal>
-            )}
-          </div>
+                      className="!size-[var(--vds-floating-conversation-entry-size)] !min-w-0 touch-none !rounded-[var(--vds-radius-6)] ![border:var(--vds-border-width-1)_solid_var(--vds-border-default)] ![background:var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [--vds-icon-button-glyph:var(--vds-icon-10)]"
+                      data-testid="workspace-restore-conversation"
+                      onPointerDown={startBubbleDrag}
+                      onPointerMove={moveBubbleDrag}
+                      onPointerUp={stopBubbleDrag}
+                      onPointerCancel={stopBubbleDrag}
+                      onLostPointerCapture={() => {
+                        if (bubbleDrag.current) {
+                          const bounds = floatingBounds()
+                          if (bounds)
+                            setBubblePosition(floatingPanelDockPosition(floatingDock, bounds))
+                        }
+                        bubbleDrag.current = null
+                      }}
+                      onClick={(event) => {
+                        if (bubbleDragged.current && event.detail !== 0) return
+                        changeLayout('restoreConversation')
+                      }}
+                    />
+                    {minimizedSession && (
+                      <div className="absolute -right-[var(--vds-radius-3)] -top-[var(--vds-radius-3)]">
+                        <TaskStatus
+                          node={minimizedSession}
+                          unread={sessionNeedsAttention(
+                            reminders.by_session[minimizedSession.id] ?? 0
+                          )}
+                          variant="badge"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </FloatingPortal>
+              )}
+            </div>
+          )
         }
       />
     </Motion>

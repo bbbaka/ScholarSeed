@@ -770,6 +770,36 @@ static napi_value consume_at(napi_env env, napi_callback_info info) {
 #endif
 }
 
+#ifdef __APPLE__
+static napi_value replace_project_at(napi_env env, napi_callback_info info) {
+  size_t argc = 5, expected_length = 0, next_length = 0;
+  napi_value argv[5], result;
+  void *data = NULL, *expected = NULL, *next = NULL;
+  bool expected_buffer = false, next_buffer = false;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || argc != 4 ||
+      napi_is_buffer(env, argv[2], &expected_buffer) != napi_ok || !expected_buffer ||
+      napi_is_buffer(env, argv[3], &next_buffer) != napi_ok || !next_buffer ||
+      napi_get_buffer_info(env, argv[2], &expected, &expected_length) != napi_ok ||
+      napi_get_buffer_info(env, argv[3], &next, &next_length) != napi_ok)
+    return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  struct lease *parent = lookup(env, data, argv[0]);
+  if (!parent) return NULL;
+  if (parent->state != LEASE_HELD) return fail(env, "ERR_LEASE_CLOSED", 0);
+  if (!parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
+  char *name = text_argument(env, argv[1], DIRECTORY_NAME_BYTES);
+  if (!name) return NULL;
+  struct directory_error error = {0};
+  bool replaced = directory_replace_project(parent->directory, name, expected, expected_length, next, next_length, &error);
+  free(name);
+  if (!replaced) {
+    if (!strcmp(error.code, "ERR_LEASE_RELEASE")) parent->state = LEASE_UNCERTAIN;
+    return fail_directory(env, &error);
+  }
+  if (napi_get_undefined(env, &result) != napi_ok) return fail(env, "ERR_LEASE_RESULT_UNKNOWN", 0);
+  return result;
+}
+#endif
+
 /* Plain own enumerable data properties; defineProperty avoids __proto__ setters. */
 static napi_value list_at(napi_env env, napi_callback_info info) {
   size_t argc = 4;
@@ -935,6 +965,9 @@ static napi_value initialize(napi_env env, napi_value exports) {
       {"createAt", NULL, create_at, NULL, NULL, NULL, napi_default, owner},
       {"replaceAt", NULL, replace_at, NULL, NULL, NULL, napi_default, owner},
       {"consumeAt", NULL, consume_at, NULL, NULL, NULL, napi_default, owner},
+#ifdef __APPLE__
+      {"replaceProjectAt", NULL, replace_project_at, NULL, NULL, NULL, napi_default, owner},
+#endif
       {"listAt", NULL, list_at, NULL, NULL, NULL, napi_default, owner},
       {"readAt", NULL, read_at, NULL, NULL, NULL, napi_default, owner},
   };

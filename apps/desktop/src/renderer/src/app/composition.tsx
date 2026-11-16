@@ -28,6 +28,7 @@ import { feedbackRecorderFeature } from '../features/feedback-recorder/feature'
 import { literatureFeature } from '../features/literature/feature'
 import { projectFeature } from '../features/project/feature'
 import { skillsFeature } from '../features/skills/feature'
+import { schedulesFeature } from '../features/schedules/feature'
 import { resourcesFeature } from '../features/resources/feature'
 import { workbenchFeature } from '../features/workbench/feature'
 
@@ -41,6 +42,7 @@ import { workbenchFeature } from '../features/workbench/feature'
 const MODULES: readonly FeatureModule[] = [
   projectFeature(),
   skillsFeature(),
+  schedulesFeature(),
   resourcesFeature(),
   literatureFeature(),
   workbenchFeature(),

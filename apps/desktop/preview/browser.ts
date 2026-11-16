@@ -16,6 +16,8 @@ export const PREVIEW_BROWSER = {
   blankPage: 'about:blank',
   surfaceSampleCount: 2,
   maxSurfaceTabs: 100,
+  paperPdf: 'https://arxiv.org/pdf/2611.09061',
+  paperPages: 28,
 } as const
 
 export interface PreviewBrowserPolicy {
@@ -24,10 +26,19 @@ export interface PreviewBrowserPolicy {
   historyRead?: 'normal' | 'delayed' | 'failed'
   write?: 'normal' | 'delayed' | 'fail-once'
   surface?: {
+    paperPdf?: boolean
     seed: 'empty' | 'sample'
     read?: 'normal' | 'delayed' | 'failed'
     write?: 'normal' | 'delayed' | 'fail-once'
   }
+}
+
+export function previewPaperPage(input: string): number | null {
+  if (input === PREVIEW_BROWSER.paperPdf) return 1
+  if (!input.startsWith(`${PREVIEW_BROWSER.paperPdf}#page=`)) return null
+  const value = input.slice(`${PREVIEW_BROWSER.paperPdf}#page=`.length)
+  const page = Number(value)
+  return /^\d+$/.test(value) && page >= 1 && page <= PREVIEW_BROWSER.paperPages ? page : null
 }
 
 export class PreviewBrowserError extends Error {
@@ -59,6 +70,7 @@ export class PreviewBrowser {
 
   constructor(policy: PreviewBrowserPolicy, now = Date.now()) {
     this.policy = { ...policy, ...(policy.surface ? { surface: { ...policy.surface } } : {}) }
+    if (policy.surface?.paperPdf) this.surface.engine = 'chromium-sidecar'
     this.sites = { revision: 0, agentBrowserUseEnabled: false, sites: policy.seed === 'sample' ? [{ origin: PREVIEW_BROWSER.sampleOrigin, read: 'allow', interact: 'ask' }] : [] }
     this.visits = policy.seed === 'sample' ? Array.from({ length: PREVIEW_BROWSER.sampleCount }, (_, index) => ({
       id: crypto.randomUUID(),
@@ -93,7 +105,7 @@ export class PreviewBrowser {
     if (!parsed) return { ok: false, error: BROWSER_ERROR.invalidCommand }
     const request = structuredClone(parsed)
     if (request.kind !== 'open' && request.kind !== 'select' && request.kind !== 'close') return { ok: false, error: BROWSER_ERROR.permissionDenied }
-    if (request.kind === 'open' && request.input !== undefined && request.input !== PREVIEW_BROWSER.blankPage) return { ok: false, error: BROWSER_ERROR.permissionDenied }
+    if (request.kind === 'open' && request.input !== undefined && request.input !== PREVIEW_BROWSER.blankPage && !(this.policy.surface.paperPdf && previewPaperPage(request.input))) return { ok: false, error: BROWSER_ERROR.permissionDenied }
     if (request.kind !== 'open' && !this.surface.tabs.some(tab => tab.tabId === request.tabId)) return { ok: false, error: BROWSER_ERROR.targetClosed }
     if (this.surfaceWriting) return { ok: false, error: BROWSER_ERROR.cdpBusy }
     if (request.kind === 'open' && this.surface.tabs.length >= PREVIEW_BROWSER.maxSurfaceTabs) return { ok: false, error: BROWSER_ERROR.operationFailed }
@@ -108,6 +120,10 @@ export class PreviewBrowser {
       }
       if (request.kind === 'open') {
         const tab = this.blankTab()
+        if (request.input && previewPaperPage(request.input)) {
+          tab.url = request.input
+          tab.title = `Does Reasoning Improve Psychological Depth in Large Language Models? — PDF (${previewPaperPage(request.input)}/${PREVIEW_BROWSER.paperPages})`
+        }
         this.surface.tabs.push(tab)
         this.surface.activeTabId = tab.tabId
       } else if (request.kind === 'select') this.surface.activeTabId = request.tabId

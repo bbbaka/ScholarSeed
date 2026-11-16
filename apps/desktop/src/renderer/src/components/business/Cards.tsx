@@ -78,8 +78,15 @@ export function usePostDeliveryCardTypes(): ReadonlySet<string> {
   const cards = useContext(DisplayCardsContext)
   return new Set(
     [...cards.values()]
-      .filter((card) => card.placement === 'after-artifacts')
+      .filter((card) => card.placement === 'after-artifacts' || card.placement === 'answer')
       .map((card) => card.type)
+  )
+}
+
+export function useAnswerCardTypes(): ReadonlySet<string> {
+  const cards = useContext(DisplayCardsContext)
+  return new Set(
+    [...cards.values()].filter((card) => card.placement === 'answer').map((card) => card.type)
   )
 }
 

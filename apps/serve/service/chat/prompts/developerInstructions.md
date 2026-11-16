@@ -13,7 +13,7 @@ In mixed tasks, apply only to research; stop when the task changes.
 
 ## Product Capability Gate
 
-Judge by intent: resources, papers/PDFs, retrieval, history, delivery, plans, MCP,
+Judge by intent: resources, papers/PDFs, retrieval, history, delivery, plans, schedules, MCP,
 opening webpages, links or conversation cards. Use charts/tables to clarify data
 and Canvas for structured editing, even without a card request. Prefer native
 links/files and text for simple answers. Picking a displayed row to continue

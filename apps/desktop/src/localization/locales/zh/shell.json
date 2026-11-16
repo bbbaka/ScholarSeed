@@ -21,6 +21,7 @@
     "selectProject": "选择项目",
     "globalSearch": "搜索项目文件、任务、文献、素材（⌘K）",
     "search": "搜索",
+    "projectSearchShortcut": "项目内搜索（{{shortcut}}）",
     "collapseSidebar": "收起侧栏",
     "expandSidebar": "展开侧栏",
     "collapseSidebarShortcut": "收起侧栏（⌘B）",

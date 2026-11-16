@@ -18,7 +18,11 @@ import { getAuthMe, getAuthStatus, type AuthUser } from '../../api'
 import { Icon } from '../../icons'
 import { logoutDesktopSession } from '../../logout'
 import { useApp } from '../../store'
-import { SYSTEM_LANGUAGE_MODE } from '../../../../preferences'
+import {
+  SYSTEM_LANGUAGE_MODE,
+  PREFERENCE_THEMES,
+  type PreferenceTheme,
+} from '../../../../preferences'
 import {
   MENU_ACTION,
   type AccountMenuAction,
@@ -346,6 +350,7 @@ export function AccountMenu(props: AccountMenuProps): React.JSX.Element | null {
     revisions.current.identityRevision
   )
   const availableActions: AccountMenuAction[] = [
+    MENU_ACTION.appearance,
     MENU_ACTION.language,
     MENU_ACTION.guide,
     MENU_ACTION.settings,
@@ -368,6 +373,7 @@ export function AccountMenu(props: AccountMenuProps): React.JSX.Element | null {
     logoutBusy: props.logoutBusy,
     logoutError: props.logoutError || null,
     locale: state.lang === 'en' ? 'en' : 'zh-CN',
+    theme: state.theme,
     ...(state.languageMode === SYSTEM_LANGUAGE_MODE ? { languageMode: SYSTEM_LANGUAGE_MODE } : {}),
   }
   const live = React.useRef({ props, view, lease: { ...revisions.current } })
@@ -411,6 +417,12 @@ export function AccountMenu(props: AccountMenuProps): React.JSX.Element | null {
         )
       )
         return
+      if (action === MENU_ACTION.appearance) {
+        if (value.kind !== 'choice' || !PREFERENCE_THEMES.includes(value.value as PreferenceTheme))
+          return
+        act.setTheme(value.value as PreferenceTheme)
+        return
+      }
       if (action === MENU_ACTION.language) {
         if (value.kind !== 'choice') return
         const mode = value.value === 'zh-CN' ? 'zh' : value.value

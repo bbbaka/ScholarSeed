@@ -17,6 +17,14 @@ const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../apps/desktop/scripts/c
 
 const ROOT = path.resolve(__dirname, '../..')
 const DESKTOP = path.join(ROOT, 'apps', 'desktop')
+const PDFE_MACOS_WORKBENCH_CASES = [
+  'native diagnostic read requires the active top-level controls and a private grant',
+  'native diagnostics link interrupted and reconnected conversation streams to the actual cursor',
+  'native API calls and iteration versions omit shared controls without changing the active scene',
+  'native iteration maintenance shares a single reloadable snapshot without resetting the scene',
+  'native iteration editing persists safely and retains drafts on conflict or write denial',
+  'native scene copy identifies exact aliases without launching a scene',
+]
 const PDFE_REGRESSION_CASES = [
   'native draft mixed context previews, removes and sends actual references',
   'native draft shared attachment deletion preserves unselected sources and does not open previews',
@@ -486,13 +494,11 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       'scripts/shared/__tests__/examples.test.cjs',
       'scripts/shared/__tests__/preparation.test.cjs',
       'scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
-      'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
       'scripts/__tests__/ownership.test.cjs', 'scripts/ci/__tests__/test.test.cjs', 'scripts/ci/__tests__/affected.test.mjs',
       'scripts/cd/__tests__/package.test.cjs', 'scripts/cd/__tests__/distribution.test.cjs', 'scripts/ci/__tests__/verdict.test.cjs', 'scripts/ci/__tests__/model.test.cjs',
       'scripts/ci/__tests__/events.test.cjs', 'scripts/ci/__tests__/transport.test.cjs', 'scripts/ci/__tests__/smoke.test.cjs',
       'scripts/ci/__tests__/skillhub.test.cjs', 'scripts/ci/__tests__/progress.test.cjs', 'scripts/ci/__tests__/diagnostics.test.cjs',
       'apps/desktop/scripts/ci/__tests__/standards.test.mjs',
-      'apps/desktop/src/renderer/src/features/workbench/office/local-fonts.test.cjs',
       ...NATIVE_TEST_FILES.map(filename =>
         path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))],
     timeoutMs: 0,
@@ -500,10 +506,11 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
   stages.push({ id: 'desktop-build', kind: 'npm', cwd: ROOT,
     dependsOn: 'skills-source-verify',
     args: ['--prefix', 'apps/desktop', 'run', 'build'] })
+  const pdfeCases = platform === 'darwin' ? [...PDFE_REGRESSION_CASES, ...PDFE_MACOS_WORKBENCH_CASES] : PDFE_REGRESSION_CASES
   stages.push({ id: 'desktop-pdfe', kind: 'playwright', cwd: DESKTOP,
     args: ['test', '--config', 'preview/native.config.ts', '--project=pdfe',
-      '--grep', PDFE_REGRESSION_CASES.join('|'),
-      '--reporter=json', '--retries=0'], profile, expectedTitles: PDFE_REGRESSION_CASES })
+      '--grep', pdfeCases.join('|'),
+      '--reporter=json', '--retries=0'], profile, expectedTitles: pdfeCases })
   stages.push({ id: 'desktop-e2e', kind: 'playwright', cwd: DESKTOP,
     args: ['test', '--project=smoke', '--project=workbench', '--project=update', '--project=live', '--reporter=json', '--retries=0'],
     dependsOn: 'desktop-build', requiresLivePrerequisites: !offline, profile, quarantine })

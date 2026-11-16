@@ -1,3 +1,7 @@
+import { MEMORY_REVIEW_ENTRIES, MEMORY_REVIEW_SESSIONS } from './fixtures/memories.ts'
+import { PREVIEW_REVISION, PREVIEW_REVISION_TURNS, revisionReferences, revisionSnapshot } from './revisions.ts'
+import type { MessageRevisionResult } from '../src/renderer/src/contracts/editing.ts'
+import type { ForkOrigin } from '../src/renderer/src/features/assistant/fork.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -5,6 +9,7 @@ import { defaultRendererPreferences, sanitizeRendererPreferences } from '../src/
 import { PREFERENCE_FIELDS } from '../src/preference-diagnostics.ts'
 import { ONBOARDING_GROUPS } from '../src/onboarding.ts'
 import { NOTIFICATION_PATH } from '../src/notifications.ts'
+import { PDFE_DIAGNOSTIC_HEADER, PDFE_DIAGNOSTIC_PATH, type PdfeDiagnosticStatus } from '../src/pdfe.ts'
 import { DEFAULT_PROJECT_LAYOUT } from '../src/layout.ts'
 import type { RendererPreferences } from '../src/preferences.ts'
 import type {
@@ -12,6 +17,7 @@ import type {
   FilesResp,
   RuntimePreparation,
   HistoryResult,
+  HistoryMessageReference,
   ModelsResp,
   OpenResp,
   ProductEvent,
@@ -47,6 +53,7 @@ import {
 } from './home.ts'
 import {
   PREVIEW_PROJECT_ID,
+  PREVIEW_SCHEDULE_RECOVERY,
   PREVIEW_INSTANCE_PATTERN,
   PREVIEW_RUNTIME_RECONFIGURATION,
 } from './constants.ts'
@@ -58,8 +65,8 @@ import { PreviewVersions, PreviewVersionError, previewVersionRange } from './ver
 import { PreviewReviews } from './reviews.ts'
 import { ProjectSimulation, PreviewProjectError } from './project.ts'
 import type { PreviewProject } from './project.ts'
-import { PreviewDiagnostics, PREVIEW_DIAGNOSTIC_LIMIT } from './diagnostics.ts'
-import type { PreviewDiagnosticSnapshot } from './diagnostics.ts'
+import { PreviewDiagnostics } from './diagnostics.ts'
+import type { PreviewDiagnosticAuthorize } from './access.ts'
 import { PreviewSearches, PreviewSearchError } from './searches.ts'
 import {
   PreviewAccount,
@@ -107,6 +114,10 @@ import { BROWSER_ERROR } from '../src/browser.ts'
 import { PreviewArtifacts, PreviewArtifactsError } from './artifacts.ts'
 import { PREVIEW_ARTIFACTS } from './publications.ts'
 import type { PreviewFiles } from './files.ts'
+import { PREVIEW_SCHEDULE, PREVIEW_CREATED_SCHEDULE, PREVIEW_CREATED_SCHEDULE_REPLY, PREVIEW_SCHEDULE_INTERESTS, PreviewSchedules, previewScheduleRoute } from './scheduling.ts'
+import { SCHEDULE_CARD } from '../src/renderer/src/features/schedules/model.ts'
+import { PREVIEW_DISCOVERY, PREVIEW_DISCOVERY_SAVED, previewDiscoveryIds, previewDiscoveryPaper } from './discovery.ts'
+import { PREVIEW_PROJECT_SEARCH, previewProjectSearch, previewSearchMatches, previewSessionHit } from './search.ts'
 
 const CONFIG = {
   origin: 'http://preview.local',
@@ -125,7 +136,6 @@ const CONFIG = {
   heartbeatMs: 15_000,
   maxBodyBytes: 1024 * 1024,
   maxInstances: 100,
-  maxUnhandled: 100,
   statusSessionLimit: 200,
   statusQueueLimit: 500,
   analysisIdentityMaxChars: 128,
@@ -134,6 +144,27 @@ const CONFIG = {
   instanceParameter: 'previewInstance',
   instanceHeader: 'x-preview-instance',
 } as const
+
+const diagnosticRequests = new WeakMap<ServerResponse, ReturnType<PreviewDiagnostics['begin']>>()
+const diagnosticStreams = new WeakMap<ServerResponse, ReturnType<PreviewDiagnostics['open']>>()
+
+function observeStream(
+  response: ServerResponse,
+  ledger: PreviewDiagnostics,
+  kind: Parameters<PreviewDiagnostics['open']>[0],
+  identity?: string,
+  cursor?: number
+): void {
+  const observation = ledger.open(kind, identity, cursor)
+  diagnosticStreams.set(response, observation)
+  response.once('close', () => observation.close(response.writableFinished ? 'closed' : 'interrupted'))
+}
+
+function writeStream(response: ServerResponse, frame: string, event: string, sequence?: number): void {
+  if (response.destroyed || response.writableEnded) return
+  response.write(frame)
+  diagnosticStreams.get(response)?.written(event, sequence)
+}
 
 const RESOURCE_LIST_SCOPE = {
   path: '/api/resource/list',
@@ -234,7 +265,23 @@ const MODELS: ModelsResp = {
   ],
 }
 
+const PREVIEW_STARTER_SKILLS = ['precise-literature-search', 'literature-review', 'research-idea-partner']
+
 const PREVIEW_SKILLS: readonly SkillInfo[] = [
+  ...PREVIEW_STARTER_SKILLS.map(
+    (name): SkillInfo => ({
+      name,
+      description: '科研任务模板模拟技能，不调用真实模型或工具。',
+      group: 'scholarseed',
+      source: 'builtin',
+      enabled: true,
+      active: true,
+      removable: false,
+      toggleable: false,
+      dependency_status: 'ready',
+      icon: 'search',
+    })
+  ),
   {
     name: 'preview-notes',
     description: '隔离的模拟技能，仅供设置界面验证。',
@@ -283,6 +330,8 @@ const PREVIEW_SKILLS: readonly SkillInfo[] = [
 ]
 
 interface Session {
+  origin?: ForkOrigin
+  revisions?: Map<string, { signature: string; result: MessageRevisionResult }>
   createdAt: number
   modifiedAt: number
   lastAgentReplyAt: number | null
@@ -310,9 +359,13 @@ interface Session {
 }
 
 interface Instance {
+  projectSearch: boolean
+  schedules: PreviewSchedules
+  paperDiscovery: boolean
   homeRead: PreviewHomeRead
   homeProjectRead: PreviewHomeRead
   id: string
+  pageId: string | null
   scene: string
   projects: ProjectSimulation
   sessions: Map<string, Session>
@@ -323,7 +376,6 @@ interface Instance {
   fileStreams: Map<ServerResponse, string>
   notificationStreams: Set<ServerResponse>
   epoch: string
-  unhandled: string[]
   skills: Map<string, { info: SkillInfo; document: string }>
   skillRevision: number
   diagnostics: PreviewDiagnostics
@@ -353,7 +405,8 @@ interface Instance {
   artifactDelivery: boolean
 }
 
-const PREVIEW_RECOVERY = new Map<string, (instance: Instance) => void>([
+const PREVIEW_RECOVERY = new Map<string, (instance: Instance) => void | boolean>([
+  [PREVIEW_SCHEDULE_RECOVERY, instance => instance.schedules.recoverRead()],
   [PREVIEW_HOME.recoveryPath, (instance) => instance.homeProjectRead.recover()],
   [
     PREVIEW_CONTENT.recoveryPath,
@@ -492,6 +545,7 @@ function createInstance(
     page?.scenarios.find((scenario) => scenario.id === scene) ??
     (page?.id === scene ? page.scenarios[0] : undefined)
   const conversation = previewConversationPolicy(scenario?.simulation?.conversation, scene)
+  const scheduleRecommendations = scenario?.simulation?.scheduleRecommendations
   const archive = scenario?.simulation?.archives
     ? new PreviewArchive(scenario.simulation.archives)
     : undefined
@@ -509,7 +563,9 @@ function createInstance(
       : []
   const home = scenario?.home ? homeSeed(project, scenario.home) : undefined
   const fileSeed: PreviewFileSeed =
-    scenario?.simulation?.browsing?.seed === 'empty' ? 'empty' : home ? 'example' : 'reviewed'
+    scenario?.simulation?.browsing?.seed === 'empty' ||
+    scheduleRecommendations === 'new-project' || scheduleRecommendations === 'conversations'
+      ? 'empty' : home ? 'example' : 'reviewed'
   const projects = new ProjectSimulation(
     CONFIG.root,
     home?.projects ?? (scene === 'empty' ? [] : [project, ...archivedProjects]),
@@ -575,6 +631,7 @@ function createInstance(
       preferences.lastLocation.projectId = project.id
       preferences.lastLocation.sessionProjectId = project.id
       preferences.lastLocation.sessionId = CONFIG.session
+      if (scenario?.simulation?.schedules || conversation.editing) preferences.lastLocation.view = 'resource'
     }
   }
   if (conversation.draftReferences && preferences.lastLocation) {
@@ -589,9 +646,145 @@ function createInstance(
     }
   }
   const sessions =
-    home || scene === 'empty'
+    home || scene === 'empty' || scheduleRecommendations
       ? new Map<string, Session>()
       : new Map([[CONFIG.session, createSession(CONFIG.session, project.root, conversation)]])
+  if (conversation.editing) {
+    const session = sessions.get(CONFIG.session)!
+    session.title = PREVIEW_REVISION.title
+    for (const sample of PREVIEW_REVISION_TURNS) {
+      session.turns += 1
+      session.lastTurn = randomUUID()
+      session.lastStatus = 'completed'
+      session.history.turns.push({ kind: 'user', role: 'user', text: sample.user,
+        turn_id: session.lastTurn, item_id: randomUUID(),
+        refs: session.turns === 2 ? [{ type: 'file', id: 'research-notes.pdf', title: '科研工具调研笔记.pdf', path: `${project.root}/research-notes.pdf` }] : [] })
+      appendAnswer(session, sample.answer)
+      session.history.turn_activity.push({ turn_id: session.lastTurn, started_at: session.createdAt, completed_at: session.createdAt, outcome: 'completed' })
+    }
+  }
+  if (scenario?.simulation?.memory === 'review') {
+    sessions.clear()
+    for (const sample of MEMORY_REVIEW_SESSIONS) {
+      const session = createSession(sample.id, project.root, conversation)
+      session.title = sample.title
+      session.turns = 1
+      session.lastTurn = randomUUID()
+      session.lastStatus = 'completed'
+      session.history.turns.push({ kind: 'user', role: 'user', text: [sample.user, ...MEMORY_REVIEW_ENTRIES.filter(entry => entry.sessionId === sample.id).map(entry => `- ${entry.content}`)].join('\n'),
+        turn_id: session.lastTurn, item_id: randomUUID(), refs: [] })
+      appendAnswer(session, sample.answer)
+      sessions.set(session.id, session)
+    }
+  }
+  if (scheduleRecommendations === 'conversations') {
+    for (const [index, interest] of PREVIEW_SCHEDULE_INTERESTS.entries()) {
+      const session = createSession(`${CONFIG.session}-interest-${index + 1}`, project.root, conversation)
+      session.title = interest
+      session.turns = 1
+      session.lastTurn = randomUUID()
+      session.lastStatus = 'completed'
+      session.history.turns.push({
+        kind: 'user', role: 'user', text: `我想持续关注${interest}，请整理值得跟进的研究方向。`,
+        turn_id: session.lastTurn, item_id: randomUUID(), refs: [],
+      })
+      appendAnswer(session, `已记录模拟关注方向：${interest}。此内容仅用于 PDFE 推荐展示，不代表真实偏好分析。`)
+      sessions.set(session.id, session)
+    }
+  }
+  if (scenario?.simulation?.projectSearch) {
+    const session = sessions.get(CONFIG.session)!
+    const turnId = randomUUID()
+    session.turns = 1
+    session.lastTurn = turnId
+    session.lastStatus = 'completed'
+    session.history.turns.push({
+      kind: 'user', role: 'user', text: PREVIEW_PROJECT_SEARCH.user,
+      turn_id: turnId, item_id: randomUUID(), refs: [],
+    })
+    appendAnswer(session, PREVIEW_PROJECT_SEARCH.answer)
+  }
+  if (scenario?.simulation?.schedules === 'created' || scenario?.simulation?.schedules === 'clarification') {
+    const session = sessions.get(CONFIG.session)!
+    session.title = PREVIEW_CREATED_SCHEDULE.title
+    session.turns = 1
+    session.lastTurn = randomUUID()
+    session.lastStatus = 'completed'
+    session.history.turns.push({
+      kind: 'user', role: 'user', text: PREVIEW_CREATED_SCHEDULE.request,
+      turn_id: session.lastTurn, item_id: randomUUID(), refs: [],
+    })
+    session.history.turns.push({
+      kind: 'text', role: 'assistant', phase: 'commentary',
+      text: '可以，我先确认你关注的产品范围、月报时间和报告格式，再整理计划供你确认。',
+      turn_id: session.lastTurn, item_id: randomUUID(),
+    })
+    const clarification: ProductHilData = {
+      request_id: 'preview-schedule-clarification', kind: 'question', method: 'user_input',
+      requested_at: session.createdAt,
+      questions: [
+        { id: 'topic', header: '关注方向', question: '重点关注哪些科研 AI 工具和动态？', options: [{ label: '文献检索与综述、想法生成、实验自动化' }, { label: '仅文献检索工具' }] },
+        { id: 'cadence', header: '执行时间', question: '多久整理一次，什么时候查看？', options: [{ label: '每月1日 09:00（北京时间）' }, { label: '每周一 09:00（北京时间）' }] },
+        { id: 'output', header: '结果形式', question: '希望月报包含什么？', options: [{ label: '中文月报：3–5条摘要、来源表格和竞争分析' }, { label: '仅动态清单和来源链接' }] },
+      ],
+    }
+    publish(session, 'hil_requested', clarification)
+    if (scenario.simulation.schedules === 'clarification') {
+      session.pending = [clarification]
+      session.activeTurn = session.lastTurn
+      session.lastStatus = 'waiting'
+      publish(session, 'session_state', {
+        state: 'waiting', runtime_id: 'codex', active_turn_id: session.activeTurn,
+      })
+    } else {
+      publish(session, 'hil_resolved', {
+        ...clarification, state: 'resolved', resolved_at: session.createdAt,
+        answers: { topic: '文献检索与综述、想法生成、实验自动化', cadence: '每月1日 09:00（北京时间）', output: '中文月报：3–5条摘要、来源表格和竞争分析' },
+      })
+      session.turns = 2
+      session.lastTurn = randomUUID()
+      session.history.turns.push({
+        kind: 'user', role: 'user',
+        text: '每月1日北京时间上午9点，整理过去一个月的科研 AI 工具动态。重点看 Elicit、Consensus、SciSpace、Semantic Scholar、FutureHouse、Google AI co-scientist 和国内同类产品的新产品、功能更新、融资并购、重要论文及评测基准。中文月报要有3–5条摘要、带来源链接的表格，以及文献综述和想法生成类产品的竞争分析。只收录有可靠来源的信息，结果放在独立执行会话中，不用发邮件。',
+        turn_id: session.lastTurn, item_id: randomUUID(), refs: [],
+      })
+      appendAnswer(session, `我整理了“${PREVIEW_CREATED_SCHEDULE.schedule.name}”的计划：每月1日上午9点（北京时间）执行，首次为2026年12月1日。\n\n${PREVIEW_CREATED_SCHEDULE.schedule.prompt}\n\n确认后，我会创建并开启这个定时任务。`)
+      session.turns = 3
+      session.lastTurn = randomUUID()
+      session.history.turns.push({
+        kind: 'user', role: 'user', text: PREVIEW_CREATED_SCHEDULE.confirmation,
+        turn_id: session.lastTurn, item_id: randomUUID(), refs: [],
+      })
+      appendAnswer(session, PREVIEW_CREATED_SCHEDULE_REPLY)
+      publish(session, 'display_card', {
+        card_id: PREVIEW_CREATED_SCHEDULE.cardId, type: SCHEDULE_CARD, content: PREVIEW_CREATED_SCHEDULE.schedule,
+      })
+      session.history.turn_activity.push({
+        turn_id: session.lastTurn,
+        started_at: session.events.find((event) => event.turn_id === session.lastTurn)!.ts,
+        completed_at: session.events.at(-1)!.ts,
+        outcome: 'completed',
+      })
+    }
+  }
+  if (scenario?.simulation?.schedules === 'proposal') {
+    const session = sessions.get(CONFIG.session)!
+    session.turns = 1
+    session.lastTurn = randomUUID()
+    session.lastStatus = 'completed'
+    session.history.turns.push({
+      kind: 'user', role: 'user', text: PREVIEW_SCHEDULE.prompt,
+      turn_id: session.lastTurn, item_id: randomUUID(), refs: [],
+    })
+    appendAnswer(session, '这是定时任务的模拟提案。确认后才写入当前 PDFE 实例。')
+    publish(session, 'display_card', {
+      card_id: 'preview-schedule-proposal', type: SCHEDULE_CARD, content: PREVIEW_SCHEDULE,
+    })
+    session.history.turn_activity.push({
+      turn_id: session.lastTurn, started_at: session.createdAt,
+      completed_at: session.events.at(-1)!.ts, outcome: 'completed',
+    })
+  }
   if (scenario?.simulation?.reviewBatch) {
     const session = sessions.get(CONFIG.session)!
     const batch = reviews.get(project.id)!.list().items[0]
@@ -786,9 +979,46 @@ function createInstance(
       scenario.simulation.contentRead.mode
     )
   }
+  let archiveNextCompletedRun = scenario?.simulation?.schedules === 'archived'
   return {
     id,
+    pageId: page?.id ?? null,
     scene,
+    schedules: new PreviewSchedules(scenario?.simulation?.schedules, (task, run) => {
+      const session = createSession(randomUUID(), project.root, undefined, run.started_at)
+      session.title = task.name
+      if (archiveNextCompletedRun && run.status === 'completed') {
+        session.archived = true
+        archiveNextCompletedRun = false
+      }
+      session.turns = 1
+      session.lastTurn = randomUUID()
+      session.lastStatus = run.status === 'missed' ? null : run.status
+      session.activeTurn = run.status === 'running' ? session.lastTurn : null
+      session.modifiedAt = run.finished_at ?? run.started_at
+      session.history.turns.push({
+        kind: 'user', role: 'user', text: task.prompt,
+        turn_id: session.lastTurn, item_id: randomUUID(),
+      })
+      session.history.turn_activity.push({
+        turn_id: session.lastTurn, started_at: run.started_at,
+        ...(run.finished_at === null || run.status === 'running' || run.status === 'missed' ? {} : {
+          completed_at: run.finished_at, outcome: run.status,
+        }),
+      })
+      if (run.status === 'completed') {
+        session.lastAgentReplyAt = run.finished_at
+        session.history.turns.push({
+          kind: 'text', role: 'assistant', phase: 'final_answer',
+          text: `「${task.name}」模拟执行已完成。已整理研究要点与后续建议；未调用真实模型、工具或后台调度。`,
+          turn_id: session.lastTurn, item_id: randomUUID(),
+        })
+      }
+      sessions.set(session.id, session)
+      return session.id
+    }, CONFIG.session),
+    paperDiscovery: Boolean(scenario?.simulation?.paperDiscovery),
+    projectSearch: Boolean(scenario?.simulation?.projectSearch),
     preparations: new Map(),
     projects,
     versions,
@@ -821,6 +1051,7 @@ function createInstance(
             .find((entry) => entry.path === 'sample.pdf')
         : undefined,
       policy: scenario?.simulation?.literature,
+      savedPapers: scenario?.simulation?.paperDiscovery ? PREVIEW_DISCOVERY_SAVED : undefined,
     }),
     content,
     searches: new PreviewSearches({
@@ -841,7 +1072,6 @@ function createInstance(
     fileStreams: new Map(),
     notificationStreams: new Set(),
     epoch: randomUUID(),
-    unhandled: [],
     skills: new Map(
       (scene === 'empty' ? [] : PREVIEW_SKILLS).map((info) => [
         info.name,
@@ -947,10 +1177,12 @@ function publish<Type extends ProductEvent['type']>(
   session.events.push(event)
   session.history.activity_events.push(event)
   for (const stream of session.streams)
-    if (!stream.destroyed && !stream.writableEnded)
-      stream.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
+    writeStream(stream, `id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`, event.type, event.seq)
   if (type === 'message_delta' && session.transport.observeDelta(session.streams.size > 0)) {
-    for (const stream of session.streams) stream.end()
+    for (const stream of session.streams) {
+      diagnosticStreams.get(stream)?.close('interrupted', true)
+      stream.end()
+    }
     session.streams.clear()
   }
 }
@@ -1166,7 +1398,7 @@ function answer(session: Session, text: string): void {
   finish(session, 'completed')
 }
 
-function startTurn(instance: Instance, session: Session, body: Record<string, unknown>): void {
+function startTurn(instance: Instance, session: Session, body: Record<string, unknown>, references?: HistoryMessageReference[]): void {
   const scene = instance.conversation.mode
   session.artifactEnabled = Boolean(instance.artifacts)
   session.deliver =
@@ -1190,7 +1422,7 @@ function startTurn(instance: Instance, session: Session, body: Record<string, un
     typeof body.client_user_message_id === 'string'
       ? body.client_user_message_id
       : `user-${session.turns}`
-  const refs = previewSubmittedReferences(session.context.refs, session.activeTurn).map(
+  const refs = references ?? previewSubmittedReferences(session.context.refs, session.activeTurn).map(
     (reference) => ({
       type: reference.type,
       id: reference.id,
@@ -1402,13 +1634,17 @@ async function archiveResponse(
   }
 }
 
-function json(response: ServerResponse, payload: unknown, status = 200): void {
+function json(response: ServerResponse, payload: unknown, status = 200, captureMockResponse = false): void {
+  const body = JSON.stringify(payload)
+  const capture = diagnosticRequests.get(response)
+  if (captureMockResponse && body !== undefined) capture?.mockResponse(body)
+  else capture?.response(payload)
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-preview-simulation': 'true',
   })
-  response.end(JSON.stringify(payload))
+  response.end(body)
 }
 
 function unimplemented(
@@ -1417,9 +1653,8 @@ function unimplemented(
   path: string,
   response: ServerResponse
 ): void {
-  const unhandled = `${method} ${path}`
-  if (!instance.unhandled.includes(unhandled))
-    instance.unhandled = [...instance.unhandled.slice(-(CONFIG.maxUnhandled - 1)), unhandled]
+  diagnosticRequests.get(response)?.unmatch()
+  instance.diagnostics.markUnhandled(method)
   json(
     response,
     {
@@ -1589,7 +1824,7 @@ function publishFile(
   }
   instance.fileEvents.push(event)
   for (const [stream, selected] of instance.fileStreams)
-    if (selected === project) stream.write(`data: ${JSON.stringify(event)}\n\n`)
+    if (selected === project) writeStream(stream, `data: ${JSON.stringify(event)}\n\n`, event.kind, event.seq)
 }
 
 function documentProjection(
@@ -1625,31 +1860,10 @@ function documentProjection(
   }
 }
 
-export function createPreviewService() {
+export function createPreviewService(authorizeDiagnostics?: PreviewDiagnosticAuthorize) {
   const instances = new Map<string, Instance>()
   let disposed = false
   function state(instance: Instance) {
-    const diagnostics: PreviewDiagnosticSnapshot = {
-      requests: instance.diagnostics.snapshot(),
-      events: [...instance.sessions.values()]
-        .flatMap((session) => session.events)
-        .sort((left, right) => left.ts - right.ts)
-        .slice(-PREVIEW_DIAGNOSTIC_LIMIT)
-        .map((event) => ({
-          session_id: event.session_id,
-          seq: event.seq,
-          type: event.type,
-          ...(event.turn_id ? { turn_id: event.turn_id } : {}),
-        })),
-      files: instance.fileEvents.slice(-PREVIEW_DIAGNOSTIC_LIMIT).map((event) => ({
-        epoch: event.epoch,
-        seq: event.seq,
-        project_id: event.project_id,
-        kind: event.kind,
-        path: event.path,
-        previous_path: event.previous_path,
-      })),
-    }
     return {
       instance: instance.id,
       generation: instance.epoch,
@@ -1661,8 +1875,7 @@ export function createPreviewService() {
       ...(instance.account ? { account: instance.account.bootstrap() } : {}),
       projects: instance.projects.all(),
       sessions: [...instance.sessions.values()].map(catalogSession),
-      unhandled: instance.unhandled,
-      diagnostics: { ...diagnostics, roots: instance.roots.counts() },
+      diagnostics: { roots: instance.roots.counts() },
       feedback: { receipts: instance.feedbackReceipts.map((receipt) => ({ ...receipt })) },
     }
   }
@@ -1679,6 +1892,28 @@ export function createPreviewService() {
     }
     if (disposed) {
       json(response, { code: 'preview_disposed' }, 503)
+      return
+    }
+    if (path === PDFE_DIAGNOSTIC_PATH) {
+      const instanceId = url.searchParams.get(CONFIG.instanceParameter)
+      const secret = request.headers[PDFE_DIAGNOSTIC_HEADER]
+      if (request.method !== 'GET' || !instanceId || url.searchParams.size !== 1 ||
+        !authorizeDiagnostics?.(instanceId, secret)) {
+        json(response, { code: 'preview_diagnostic_access_denied' }, 403)
+        return
+      }
+      const selected = instances.get(instanceId)
+      if (!selected) {
+        json(response, { code: 'preview_instance_not_found' }, 404)
+        return
+      }
+      const status: Omit<PdfeDiagnosticStatus, 'environment'> = {
+        generation: selected.epoch,
+        pageId: selected.pageId,
+        scene: selected.scene,
+        ...selected.diagnostics.snapshot(),
+      }
+      json(response, status)
       return
     }
     let referer: URL | null = null
@@ -1733,23 +1968,35 @@ export function createPreviewService() {
     }
     let instance = instances.get(id)!
     const method = request.method ?? 'GET'
-    const diagnostics = instance.diagnostics
-    const started = performance.now()
-    let recorded = false
-    const record = (outcome: 'completed' | 'aborted'): void => {
-      if (recorded) return
-      recorded = true
-      diagnostics.record({
-        method,
-        path,
-        status: response.statusCode,
-        durationMs: Math.max(0, performance.now() - started),
-        outcome,
-      })
+    if (path.startsWith('/api/')) {
+      const capture = instance.diagnostics.begin(method, url)
+      diagnosticRequests.set(response, capture)
+      const record = (outcome: 'completed' | 'aborted'): void => {
+        if (!diagnosticStreams.has(response))
+          capture.finish(response.headersSent ? response.statusCode : null, outcome)
+        diagnosticRequests.delete(response)
+      }
+      response.once('finish', () => record('completed'))
+      response.once('close', () => record(response.writableFinished ? 'completed' : 'aborted'))
     }
-    response.once('finish', () => record('completed'))
-    response.once('close', () => record(response.writableFinished ? 'completed' : 'aborted'))
-    if (path === FEEDBACK.path && method === 'POST') {
+    const identify = (template: string, subjects?: Readonly<Record<string, string>>): void =>
+      diagnosticRequests.get(response)?.match(template, subjects)
+    const exact = (template: string): boolean => {
+      if (path !== template) return false
+      identify(template)
+      return true
+    }
+    const matchRoute = (
+      pattern: RegExp,
+      template: string | ((match: RegExpMatchArray) => string),
+      subject?: string
+    ): RegExpMatchArray | null => {
+      const match = path.match(pattern)
+      if (match) identify(typeof template === 'string' ? template : template(match),
+        subject && match[1] ? { [subject]: match[1] } : undefined)
+      return match
+    }
+    if (exact(FEEDBACK.path) && method === 'POST') {
       if (Number(request.headers['content-length']) > FEEDBACK.maxBodyBytes) {
         request.resume()
         json(response, { detail: 'preview_feedback_body_too_large' }, 413)
@@ -1806,7 +2053,7 @@ export function createPreviewService() {
       unimplemented(instance, method, path, response)
       return
     }
-    if (path === MCP_SETTINGS_PATH) {
+    if (exact(MCP_SETTINGS_PATH)) {
       if (method !== 'GET' && method !== 'PUT') {
         request.resume()
         unimplemented(instance, method, path, response)
@@ -1849,11 +2096,11 @@ export function createPreviewService() {
       }
       return
     }
-    if (path === PREVIEW_MODELS.providersPath && method === 'GET') {
+    if (exact(PREVIEW_MODELS.providersPath) && method === 'GET') {
       json(response, instance.models.providers())
       return
     }
-    if (path === PREVIEW_MODELS.profilesPath && method === 'GET') {
+    if (exact(PREVIEW_MODELS.profilesPath) && method === 'GET') {
       const controller = new AbortController()
       const abort = (): void => controller.abort()
       response.once('close', abort)
@@ -1873,9 +2120,10 @@ export function createPreviewService() {
       return
     }
     if (
-      path === PREVIEW_MODELS.profilesPath ||
+      exact(PREVIEW_MODELS.profilesPath) ||
       path.startsWith(`${PREVIEW_MODELS.profilesPath}/`)
     ) {
+      if (path !== PREVIEW_MODELS.profilesPath) identify(PREVIEW_MODELS.profilesPath + '/:operation')
       const operation = path.slice(PREVIEW_MODELS.profilesPath.length + 1)
       const profileId = operation.split('/')[0]
       const unknownProfile =
@@ -1893,6 +2141,7 @@ export function createPreviewService() {
     const send = (payload: unknown, status = 200): void => json(response, payload, status)
     const browserRequest = PREVIEW_BROWSER_REQUESTS.get(path)
     if (instance.browser && method === 'POST' && browserRequest) {
+      identify(path)
       const controller = new AbortController()
       const abort = (): void => controller.abort()
       response.once('close', abort)
@@ -1913,9 +2162,25 @@ export function createPreviewService() {
       }
       return
     }
-    const annotationContext = path.match(
-      /^\/api\/assistant\/sessions\/([^/]+)\/annotations\/([^/]+)\/context$/
-    )
+    if (instance.paperDiscovery && exact(PREVIEW_DISCOVERY.bibliographyPath) && method === 'POST') {
+      const bytes = await readBytes(request, PREVIEW_DISCOVERY.maxBytes)
+      const paper = await previewDiscoveryPaper(url, request.headers['content-type'] ?? '', bytes)
+      if (instances.get(id) !== instance) {
+        send({ detail: 'preview_instance_reset' }, 409)
+        return
+      }
+      if (!paper) {
+        send({ detail: 'preview_curated_paper_unknown' }, 422)
+        return
+      }
+      const item = instance.literature.admitCurated(
+        paper, url.searchParams.get('project_id') ?? '', url.searchParams.get('collection_id') ?? ''
+      )
+      send({ items: [item], count: 1 }, 201)
+      return
+    }
+    const annotationContext = matchRoute(
+      /^\/api\/assistant\/sessions\/([^/]+)\/annotations\/([^/]+)\/context$/, '/api/assistant/sessions/:sessionId/annotations/:annotationId/context', 'session')
     const rawBody =
       path === '/api/workbench/content' && method === 'PUT' ? await readBytes(request) : undefined
     const body =
@@ -1926,14 +2191,49 @@ export function createPreviewService() {
             /^\/api\/resource\/versions\/[^/]+$/.test(path))))
         ? await readBody(request)
         : {}
+    diagnosticRequests.get(response)?.request(body)
     if (instances.get(id) !== instance) {
       send({ detail: 'preview_instance_reset' }, 409)
       return
     }
-    const developerMember = path.match(/^\/api\/account\/api-keys\/([^/]+)(?:\/(rotate))?$/)
-    const developerRoute = path === PREVIEW_DEVELOPER.keysPath || developerMember
+    const scheduleRoute = previewScheduleRoute(path)
+    if (scheduleRoute) {
+      identify(scheduleRoute.template, { project: scheduleRoute.project })
+      const project = instance.projects.all().find(
+        (candidate) => candidate.id === scheduleRoute.project && candidate.available && !candidate.archived_at
+      )
+      if (!project) {
+        send({ detail: 'schedule_project_unavailable' }, 404)
+        return
+      }
+      const schedules = project.id === CONFIG.project ? instance.schedules : new PreviewSchedules()
+      const result = schedules.request(scheduleRoute, method, url, body, {
+        available: (sessionId) => {
+          const session = instance.sessions.get(sessionId)
+          return Boolean(session && session.project === project.root && !session.archived)
+        },
+        open: (title, outcome) => {
+          const session = createSession(randomUUID(), project.root)
+          session.title = title
+          if (outcome === 'completed') {
+            session.turns = 1
+            session.activeTurn = session.lastTurn = randomUUID()
+            session.history.turn_activity.push({
+              turn_id: session.lastTurn, started_at: session.createdAt,
+            })
+            answer(session, '模拟执行已完成，未运行真实模型、工具或后台调度。')
+          }
+          instance.sessions.set(session.id, session)
+          return session.id
+        },
+      })
+      send(result.body, result.status)
+      return
+    }
+    const developerMember = matchRoute(/^\/api\/account\/api-keys\/([^/]+)(?:\/(rotate))?$/, match => '/api/account/api-keys/:keyId' + (match[2] ? '/rotate' : ''))
+    const developerRoute = exact(PREVIEW_DEVELOPER.keysPath) || developerMember
     const credentialRoute =
-      path === PREVIEW_DEVELOPER.ensurePath || path === PREVIEW_DEVELOPER.refreshPath
+      exact(PREVIEW_DEVELOPER.ensurePath) || exact(PREVIEW_DEVELOPER.refreshPath)
     if (instance.developer && (developerRoute || credentialRoute)) {
       const authorization =
         typeof request.headers.authorization === 'string'
@@ -1955,12 +2255,12 @@ export function createPreviewService() {
           }
           instance.developer.ensure()
           payload =
-            path === PREVIEW_DEVELOPER.ensurePath
+            exact(PREVIEW_DEVELOPER.ensurePath)
               ? { ok: true, ready: false }
               : { ok: true, issued: false, aligned: 0 }
-        } else if (path === PREVIEW_DEVELOPER.keysPath && method === 'GET')
+        } else if (exact(PREVIEW_DEVELOPER.keysPath) && method === 'GET')
           payload = await instance.developer.list(controller.signal)
-        else if (path === PREVIEW_DEVELOPER.keysPath && method === 'POST')
+        else if (exact(PREVIEW_DEVELOPER.keysPath) && method === 'POST')
           payload = await instance.developer.create(body, controller.signal)
         else if (developerMember && !developerMember[2] && method === 'DELETE')
           payload = await instance.developer.revoke(
@@ -1997,24 +2297,21 @@ export function createPreviewService() {
       }
       return
     }
-    if (path === PREVIEW_ROOTS_PATH && method === 'POST') {
+    if (exact(PREVIEW_ROOTS_PATH) && method === 'POST') {
       const ok = instance.roots.update(body)
       send({ ok }, ok ? 200 : 422)
       return
     }
-    const versionFile = path.match(/^\/api\/resource\/files\/([^/]+)\/versions$/)
-    const versionContent = path.match(
-      /^\/api\/resource\/versions\/([^/]+)(?:\/(content|annotations))?$/
-    )
-    const versionDelete = path.match(/^\/api\/resource\/versions\/([^/]+)\/delete\/preview$/)
-    const reviewBatch = path.match(
-      /^\/api\/resource\/review-batches(?:\/([^/]+)(?:\/(commit|members\/([^/]+)\/(base|candidate|current)))?)?$/
-    )
-    const reviewFile = path.match(
-      /^\/api\/resource\/files\/([^/]+)\/(pending|review\/conflict|review\/reconcile|review\/([^/]+)\/base)$/
-    )
+    const versionFile = matchRoute(/^\/api\/resource\/files\/([^/]+)\/versions$/, '/api/resource/files/:fileId/versions')
+    const versionContent = matchRoute(
+      /^\/api\/resource\/versions\/([^/]+)(?:\/(content|annotations))?$/, match => '/api/resource/versions/:versionId' + (match[2] ? '/' + match[2] : ''))
+    const versionDelete = matchRoute(/^\/api\/resource\/versions\/([^/]+)\/delete\/preview$/, '/api/resource/versions/:versionId/delete/preview')
+    const reviewBatch = matchRoute(
+      /^\/api\/resource\/review-batches(?:\/([^/]+)(?:\/(commit|members\/([^/]+)\/(base|candidate|current)))?)?$/, match => '/api/resource/review-batches' + (match[1] ? '/:batchId' : '') + (match[3] ? '/members/:memberId/' + match[4] : match[2] ? '/commit' : ''))
+    const reviewFile = matchRoute(
+      /^\/api\/resource\/files\/([^/]+)\/(pending|review\/conflict|review\/reconcile|review\/([^/]+)\/base)$/, match => '/api/resource/files/:fileId/' + (match[3] ? 'review/:reviewId/base' : match[2]))
     if (
-      path === '/api/resource/capability' ||
+      exact('/api/resource/capability') ||
       versionFile ||
       versionContent ||
       versionDelete ||
@@ -2143,7 +2440,7 @@ export function createPreviewService() {
           return
         }
       }
-      if (path === '/api/resource/capability' && method === 'GET') {
+      if (exact('/api/resource/capability') && method === 'GET') {
         const filePath = url.searchParams.get('path')
         if (!filePath) {
           send({ error: { code: 'path_required', message: 'path_required', details: {} } }, 422)
@@ -2239,7 +2536,10 @@ export function createPreviewService() {
     }
     const recover = PREVIEW_RECOVERY.get(path)
     if (recover && method === 'POST') {
-      recover(instance)
+      if (recover(instance) === false) {
+        send({ detail: 'preview_recovery_unavailable' }, 409)
+        return
+      }
       send({ preferences: instance.preferences })
       return
     }
@@ -2247,7 +2547,7 @@ export function createPreviewService() {
       send(PREVIEW_CATALOG)
       return
     }
-    if (path === PREVIEW_LOGIN.path) {
+    if (exact(PREVIEW_LOGIN.path)) {
       if (method !== 'POST') {
         send({ code: 'preview_method_not_allowed' }, 405)
         return
@@ -2323,23 +2623,24 @@ export function createPreviewService() {
       send(state(instance))
       return
     }
-    if (path === NOTIFICATION_PATH && method === 'GET') {
+    if (exact(NOTIFICATION_PATH) && method === 'GET') {
       response.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-store',
         connection: 'keep-alive',
         'x-preview-simulation': 'true',
       })
-      response.write(`event: ready\ndata: ${JSON.stringify({ instance_id: instance.epoch, changes: [] })}\n\n`)
+      observeStream(response, instance.diagnostics, 'notification')
+      writeStream(response, `event: ready\ndata: ${JSON.stringify({ instance_id: instance.epoch, changes: [] })}\n\n`, 'ready')
       instance.notificationStreams.add(response)
-      const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), CONFIG.heartbeatMs)
+      const heartbeat = setInterval(() => writeStream(response, ': heartbeat\n\n', 'heartbeat'), CONFIG.heartbeatMs)
       response.once('close', () => {
         clearInterval(heartbeat)
         instance.notificationStreams.delete(response)
       })
       return
     }
-    if (path === '/api/healthz' && method === 'GET') {
+    if (exact('/api/healthz') && method === 'GET') {
       send({
         ...HEALTH,
         capabilities: { ...HEALTH.capabilities, artifacts: Boolean(instance.artifacts) },
@@ -2347,7 +2648,7 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === '/api/healthz/backend' && method === 'GET') {
+    if (exact('/api/healthz/backend') && method === 'GET') {
       send({
         ok: HEALTH.ok,
         product: HEALTH.product,
@@ -2358,7 +2659,7 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === PREVIEW_RUNTIME_RECONFIGURATION.preparationPath && method === 'POST') {
+    if (exact(PREVIEW_RUNTIME_RECONFIGURATION.preparationPath) && method === 'POST') {
       if (typeof body.request_id !== 'string' || typeof body.model_id !== 'string' || typeof body.service_instance_id !== 'string' || (body.persist_default !== undefined && typeof body.persist_default !== 'boolean')) {
         send({ error: PREVIEW_RUNTIME_RECONFIGURATION.invalid }, 422)
         return
@@ -2389,16 +2690,17 @@ export function createPreviewService() {
       return
     }
     if (path.startsWith(PREVIEW_RUNTIME_RECONFIGURATION.preparationPath + '/') && method === 'GET') {
+      identify(PREVIEW_RUNTIME_RECONFIGURATION.preparationPath + '/:requestId')
       const requestId = decodeURIComponent(path.slice(PREVIEW_RUNTIME_RECONFIGURATION.preparationPath.length + 1))
       const receipt = instance.preparations.get(requestId)?.receipt
       send(receipt ?? { error: PREVIEW_RUNTIME_RECONFIGURATION.notFound }, receipt ? 200 : 404)
       return
     }
-    if (path === PREVIEW_RUNTIME_RECONFIGURATION.path && method === 'GET') {
+    if (exact(PREVIEW_RUNTIME_RECONFIGURATION.path) && method === 'GET') {
       send({ state: null, service_instance_id: `preview-${id}` })
       return
     }
-    if (path === '/api/resource/agent-origin' && method === 'GET') {
+    if (exact('/api/resource/agent-origin') && method === 'GET') {
       const projectId = url.searchParams.get('project')
       const resourcePath = url.searchParams.get('path')
       if (!projectId || !resourcePath) {
@@ -2419,7 +2721,7 @@ export function createPreviewService() {
       send(null)
       return
     }
-    if (path === '/api/content/trash' && method === 'GET') {
+    if (exact('/api/content/trash') && method === 'GET') {
       const limit = Number(url.searchParams.get('limit') ?? TRASH.defaultLimit)
       if (!Number.isSafeInteger(limit) || limit < TRASH.minLimit || limit > TRASH.maxLimit) {
         send({ detail: 'invalid_limit' }, 422)
@@ -2443,7 +2745,7 @@ export function createPreviewService() {
       send({ project_id: project.id, entries: [] })
       return
     }
-    if (path === '/api/account/me' && method === 'GET' && instance.account) {
+    if (exact('/api/account/me') && method === 'GET' && instance.account) {
       const result = await instance.account.profile(
         typeof request.headers.authorization === 'string'
           ? request.headers.authorization
@@ -2452,7 +2754,7 @@ export function createPreviewService() {
       send(result.body, result.status)
       return
     }
-    if (path === PREVIEW_CREDITS.path && method === 'GET' && instance.account) {
+    if (exact(PREVIEW_CREDITS.path) && method === 'GET' && instance.account) {
       const result = await instance.account.credits(
         typeof request.headers.authorization === 'string'
           ? request.headers.authorization
@@ -2461,7 +2763,7 @@ export function createPreviewService() {
       send(result.body, result.status)
       return
     }
-    if (path === '/api/auth/status' && method === 'GET') {
+    if (exact('/api/auth/status') && method === 'GET') {
       const base = previewAccountBase(
         `http://${request.headers.host}`,
         instance.account?.bootstrap()
@@ -2475,7 +2777,7 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === '/api/auth/me' && method === 'GET') {
+    if (exact('/api/auth/me') && method === 'GET') {
       send(
         instance.accountControl && instance.account
           ? instance.account.identity()
@@ -2488,15 +2790,15 @@ export function createPreviewService() {
       )
       return
     }
-    if (path === `${SKILLS_PATH}/marketplace/labels` && method === 'GET') {
+    if (exact(`${SKILLS_PATH}/marketplace/labels`) && method === 'GET') {
       send({ labels: [] })
       return
     }
-    if (path === `${SKILLS_PATH}/marketplace` && method === 'GET') {
+    if (exact(`${SKILLS_PATH}/marketplace`) && method === 'GET') {
       send({ items: [], nextCursor: null, registry: 'https://preview.invalid' })
       return
     }
-    if (path === SKILLS_PATH && method === 'GET') {
+    if (exact(SKILLS_PATH) && method === 'GET') {
       const surface = url.searchParams.get('surface')
       if (
         surface !== null &&
@@ -2518,6 +2820,7 @@ export function createPreviewService() {
       ? path.slice(SKILLS_PATH.length).match(/^\/([^/]+)(?:\/(document|activate))?$/)
       : null
     if (skillRoute) {
+      identify(SKILLS_PATH + '/:skill' + (skillRoute[2] ? '/' + skillRoute[2] : ''))
       const name = decodeURIComponent(skillRoute[1])
       const skill = instance.skills.get(name)
       if (!skill) {
@@ -2560,11 +2863,11 @@ export function createPreviewService() {
         return
       }
     }
-    if (path === '/api/resource/import-jobs' && method === 'GET') {
+    if (exact('/api/resource/import-jobs') && method === 'GET') {
       send({ items: [] })
       return
     }
-    if (path === '/api/literature/ai/structure' && method === 'POST') {
+    if (exact('/api/literature/ai/structure') && method === 'POST') {
       const project = instance.projects.all().find(project => project.id === body.project_id)
       const reviewed = PREVIEW_DOCUMENTS.find(document => document.path === PREVIEW_PDF_TRANSLATION.path)!
       if (!project || body.path !== reviewed.path || body.literature_id || body.attachment_id || body.kind !== 'document_translation' ||
@@ -2603,19 +2906,91 @@ export function createPreviewService() {
         blocks: PREVIEW_PDF_TRANSLATION.blocks })
       return
     }
-    if (path === '/api/literature/searches' && method === 'GET') {
+    if (exact('/api/literature/searches') && method === 'GET') {
       send(instance.searches.listLiterature())
       return
     }
-    if (path === '/api/literature/searches/result-status' && method === 'POST') {
+    if (exact('/api/literature/searches') && method === 'POST') {
+      send({ task: instance.searches.createLiterature(body) })
+      return
+    }
+    const closingSearch = method === 'DELETE'
+      ? matchRoute(/^\/api\/literature\/searches\/([^/]+)$/, '/api/literature/searches/:searchId', 'searchId')
+      : null
+    if (closingSearch) {
+      instance.searches.deleteLiterature(decodeURIComponent(closingSearch[1]))
+      send({})
+      return
+    }
+    if (exact('/api/literature/searches/conversation') && method === 'POST') {
+      const result = instance.searches.conversation(body)
+      const session = createSession(randomUUID(), null)
+      session.title = result.query
+      session.lastTurn = randomUUID()
+      session.lastStatus = 'completed'
+      session.turns = 1
+      session.history.turns.push({ kind: 'user', role: 'user', text: result.query,
+        turn_id: session.lastTurn, item_id: randomUUID(), refs: [] })
+      appendAnswer(session, result.answer)
+      session.history.turn_activity.push({ turn_id: session.lastTurn,
+        started_at: session.createdAt, completed_at: session.modifiedAt, outcome: 'completed' })
+      instance.sessions.set(session.id, session)
+      send({ session_id: session.id })
+      return
+    }
+    if (exact(PREVIEW_DISCOVERY.resultStatusPath) && method === 'POST') {
+      if (instance.paperDiscovery) {
+        const ids = previewDiscoveryIds(body.papers)
+        if (!ids || typeof body.project_id !== 'string') {
+          send({ detail: 'preview_curated_paper_unknown' }, 422)
+          return
+        }
+        send(instance.literature.curatedStatus(ids, body.project_id))
+        return
+      }
       send(instance.searches.resultStatus(body))
       return
     }
-    if (path === '/api/content/projects/recoveries' && method === 'GET') {
+    if (exact('/api/content/projects/recoveries') && method === 'GET') {
       send({ creations: [] })
       return
     }
-    if (path === '/api/content/roots' && method === 'GET') {
+    if (instance.projectSearch && exact(PREVIEW_PROJECT_SEARCH.path) && method === 'GET') {
+      const query = url.searchParams.get('q')?.trim()
+      if (query === undefined || query.length > PREVIEW_PROJECT_SEARCH.maxQueryLength) {
+        send({ detail: 'preview_search_query_invalid' }, 422)
+        return
+      }
+      if (!query) {
+        send({ query, hits: [], groups: {} })
+        return
+      }
+      const projectId = url.searchParams.get('project') ?? CONFIG.project
+      const project = instance.projects.all().find(candidate => candidate.id === projectId && candidate.available && !candidate.archived_at)
+      if (!project) {
+        send({ detail: 'preview_project_not_found' }, 400)
+        return
+      }
+      const literature = await instance.literature.list({ project_id: project.id, q: query, page_size: PREVIEW_PROJECT_SEARCH.maxResults })
+      if (instances.get(id) !== instance) {
+        send({ detail: 'preview_instance_reset' }, 409)
+        return
+      }
+      const files = instance.projects.files(project.id).manifest()
+        .filter(file => previewSearchMatches(file.path, query))
+        .map(file => ({ domain: 'resource', id: file.path, title: file.name, subtitle: file.path }))
+      const papers = literature.items.map(paper => ({
+        domain: 'literature', id: paper.id, title: paper.title, subtitle: paper.creators_display,
+      }))
+      const sessions = [...instance.sessions.values()].flatMap(session => {
+        if (session.project !== project.root || session.archived) return []
+        const match = previewSessionHit(session, query)
+        return match ? [match] : []
+      })
+      send({ query, ...previewProjectSearch([...files, ...papers, ...sessions], literature.total) })
+      return
+    }
+    if (exact('/api/content/roots') && method === 'GET') {
       const projectId = url.searchParams.get('project')
       const project = projectId
         ? instance.projects.all().find((project) => project.id === projectId)
@@ -2627,7 +3002,7 @@ export function createPreviewService() {
       send({ roots: [], writableRoots: [project.root] })
       return
     }
-    if (path === '/api/content/projects') {
+    if (exact('/api/content/projects')) {
       if (method === 'POST') {
         send({ operation: instance.projects.create(body.name), state: 'queued' }, 202)
         return
@@ -2652,12 +3027,16 @@ export function createPreviewService() {
           const all = instance.projects.all()
           const projects = all
             .filter((project) => includeArchived || project.archived_at == null)
-          send({ projects, current: all.some(project => project.id === CONFIG.project) ? CONFIG.project : '', workspaceRoot: CONFIG.root })
+          json(response, {
+            projects,
+            current: all.some(project => project.id === CONFIG.project) ? CONFIG.project : '',
+            workspaceRoot: CONFIG.root,
+          }, 200, true)
         })
         return
       }
     }
-    const projectMutation = path.match(/^\/api\/content\/projects\/([^/]+)(?:\/(archive))?$/)
+    const projectMutation = matchRoute(/^\/api\/content\/projects\/([^/]+)(?:\/(archive))?$/, match => '/api/content/projects/:projectId' + (match[2] ? '/archive' : ''), 'project')
     if (projectMutation && projectMutation[1] !== 'directory') {
       const projectId = decodeURIComponent(projectMutation[1])
       if (projectMutation[2] === 'archive' && method === 'POST') {
@@ -2687,17 +3066,17 @@ export function createPreviewService() {
         return
       }
     }
-    if (path === '/api/content/projects/directory' && method === 'GET') {
+    if (exact('/api/content/projects/directory') && method === 'GET') {
       send({ root: instance.projects.directory(url.searchParams.get('name')) })
       return
     }
-    const operationRoute = path.match(/^\/api\/content\/operations\/([^/]+)$/)
+    const operationRoute = matchRoute(/^\/api\/content\/operations\/([^/]+)$/, '/api/content/operations/:operationId', 'operation')
     if (operationRoute && method === 'GET') {
       send(instance.projects.operation(decodeURIComponent(operationRoute[1])))
       return
     }
-    const taskFiles = path === '/api/serve/task-files'
-    if ((path === '/api/serve/sessions' || taskFiles) && method === 'GET') {
+    const taskFiles = exact('/api/serve/task-files')
+    if ((exact('/api/serve/sessions') || taskFiles) && method === 'GET') {
       if (taskFiles && !url.searchParams.has('project_path')) {
         send({ detail: 'project_path is required' }, 422)
         return
@@ -2799,7 +3178,7 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === '/api/serve/status' && method === 'POST') {
+    if (exact('/api/serve/status') && method === 'POST') {
       const queued = body.queued_ids === undefined ? {} : body.queued_ids
       if (!Array.isArray(body.session_ids) || body.session_ids.length > CONFIG.statusSessionLimit ||
           body.session_ids.some(value => typeof value !== 'string') || !queued ||
@@ -2823,7 +3202,7 @@ export function createPreviewService() {
       }) })
       return
     }
-    if (path === '/api/serve/sessions/open' && method === 'POST') {
+    if (exact('/api/serve/sessions/open') && method === 'POST') {
       const resume = typeof body.resume_session_id === 'string' ? body.resume_session_id : null
       let session = resume ? instance.sessions.get(resume) : undefined
       if (resume && !session) {
@@ -2842,10 +3221,9 @@ export function createPreviewService() {
       send({ ...snapshot(session), resumed: !!resume })
       return
     }
-    const historyMatch = path.match(/^\/api\/serve\/history\/([^/]+)$/)
-    const authorizationRoute = path.match(
-      /^\/api\/sessions\/([^/]+)\/literature\/(results\/([^/]+)|result-status|authorizations\/([^/]+)\/retry)$/
-    )
+    const historyMatch = matchRoute(/^\/api\/serve\/history\/([^/]+)$/, '/api/serve/history/:sessionId', 'session')
+    const authorizationRoute = matchRoute(
+      /^\/api\/sessions\/([^/]+)\/literature\/(results\/([^/]+)|result-status|authorizations\/([^/]+)\/retry)$/, match => '/api/sessions/:sessionId/literature/' + (match[3] ? 'results/:resultId' : match[4] ? 'authorizations/:authorizationId/retry' : 'result-status'), 'session')
     if (authorizationRoute) {
       const session = instance.sessions.get(decodeURIComponent(authorizationRoute[1]))
       const owner = session?.authorization
@@ -2901,7 +3279,7 @@ export function createPreviewService() {
       })
       return
     }
-    const sessionMatch = path.match(/^\/api\/serve\/sessions\/([^/]+)(?:\/(.*))?$/)
+    const sessionMatch = matchRoute(/^\/api\/serve\/sessions\/([^/]+)(?:\/(.*))?$/, '/api/serve/sessions/:sessionId', 'session')
     if (sessionMatch) {
       const session = instance.sessions.get(decodeURIComponent(sessionMatch[1]))
       if (!session) {
@@ -2909,7 +3287,58 @@ export function createPreviewService() {
         return
       }
       const action = sessionMatch[2] ?? ''
-      if (action === PREVIEW_CONVERSATION.toolRecoveryAction && method === 'GET') {
+      const sessionAction = (suffix: string): boolean => {
+        if (action !== suffix) return false
+        identify('/api/serve/sessions/:sessionId' + (suffix ? '/' + suffix : ''), { session: sessionMatch[1] })
+        return true
+      }
+      if (sessionAction(PREVIEW_REVISION.action) && method === 'POST') {
+        if (typeof body.requestId !== 'string' || !body.requestId || typeof body.text !== 'string' || !body.text.trim() ||
+          typeof body.itemId !== 'string' || typeof body.turnId !== 'string' || !Array.isArray(body.references) ||
+          !body.references.every(reference => reference && typeof reference === 'object' && typeof reference.type === 'string' && typeof reference.id === 'string' && typeof reference.title === 'string')) {
+          send({ error: PREVIEW_REVISION.invalid }, 422)
+          return
+        }
+        const signature = JSON.stringify([body.itemId, body.turnId, body.text, body.references])
+        const receipt = session.revisions?.get(body.requestId)
+        if (receipt) {
+          send(receipt.signature === signature ? receipt.result : { error: PREVIEW_REVISION.conflict }, receipt.signature === signature ? 200 : 409)
+          return
+        }
+        if (session.activeTurn || session.archived || session.submission) {
+          send({ error: PREVIEW_REVISION.unavailable }, 409)
+          return
+        }
+        let inherited: HistoryResult['turns']
+        try {
+          inherited = revisionSnapshot(session.history.turns, body.turnId, body.itemId)
+        } catch {
+          send({ error: PREVIEW_REVISION.invalid }, 422)
+          return
+        }
+        const child = createSession(randomUUID(), session.project, instance.conversation)
+        child.title = `${PREVIEW_REVISION.titlePrefix}${session.title}`
+        child.history.turns = inherited
+        const inheritedTurns = new Set(inherited.map(turn => turn.turn_id))
+        child.history.turn_activity = structuredClone(session.history.turn_activity.filter(turn => inheritedTurns.has(turn.turn_id)))
+        child.turns = inherited.filter(turn => turn.kind === 'user').length
+        child.origin = {
+          source_session_id: session.id, source_product_seq: session.events.length, source_turn_id: body.turnId,
+          inherited_messages: inherited.filter(turn => turn.turn_id && turn.item_id).map(turn => ({ turn_id: turn.turn_id!, item_id: turn.item_id! })),
+          anchor: { turn_id: body.turnId, item_id: body.itemId }, title: session.title, title_fallback: null,
+          navigation: { session_id: session.id, title: session.title, title_fallback: null, runtime_workdir: CONFIG.root, project_path: session.project, runtime_id: HEALTH.runtime_id, running: false },
+          status: 'available',
+        }
+        instance.sessions.set(child.id, child)
+        const itemId = randomUUID()
+        startTurn(instance, child, { input: [{ type: 'text', text: body.text }], client_user_message_id: itemId }, revisionReferences(body.references))
+        const result: MessageRevisionResult = { sessionId: child.id, turnId: child.activeTurn!, itemId, title: child.title, projectPath: child.project }
+        session.revisions ??= new Map()
+        session.revisions.set(body.requestId, { signature, result })
+        send(result)
+        return
+      }
+      if (sessionAction(PREVIEW_CONVERSATION.toolRecoveryAction) && method === 'GET') {
         if (!url.searchParams.has('turn_id')) {
           send({ detail: PREVIEW_CONVERSATION.recoveryTurnRequired }, 422)
           return
@@ -2917,7 +3346,7 @@ export function createPreviewService() {
         send({ tool_ids: [] })
         return
       }
-      if (action === 'prediction' && method === 'POST') {
+      if (sessionAction('prediction') && method === 'POST') {
         if (typeof body.source_turn_id !== 'string' || !body.source_turn_id.trim()) {
           send({ detail: 'source_turn_id is required' }, 422)
           return
@@ -2929,7 +3358,7 @@ export function createPreviewService() {
         send({ source_turn_id: body.source_turn_id, text: null })
         return
       }
-      if (action === 'files' && method === 'GET') {
+      if (sessionAction('files') && method === 'GET') {
         const offset = Number(url.searchParams.get('offset') ?? 0)
         if (url.searchParams.get('path') || !Number.isSafeInteger(offset) || offset < 0) {
           send({ code: CONFIG.sessionDirectoryUnavailable }, url.searchParams.get('path') ? 404 : 422)
@@ -2945,20 +3374,23 @@ export function createPreviewService() {
         })
         return
       }
-      if (action === 'fork-origin' && method === 'GET') {
-        send({ origin: null })
+      if (sessionAction('fork-origin') && method === 'GET') {
+        const origin = session.origin
+        const source = origin && instance.sessions.get(origin.source_session_id)
+        send({ origin: origin ? { ...origin, status: !source ? 'deleted' : source.archived ? 'archived' : 'available', navigation: source && !source.archived ? { ...origin.navigation, title: source.title, running: Boolean(source.activeTurn) } : null } : null })
         return
       }
-      if (action === 'display-children' && method === 'GET') {
+      if (sessionAction('display-children') && method === 'GET') {
         send({ session_id: session.id, child_count: 0 })
         return
       }
-      if (action === PREVIEW_RUNTIME_RECONFIGURATION.sessionAction && method === 'GET') {
+      if (sessionAction(PREVIEW_RUNTIME_RECONFIGURATION.sessionAction) && method === 'GET') {
         response.writeHead(204)
         response.end()
         return
       }
       const artifactRoute = action.match(/^artifacts\/([^/]+)\/(raw|content|open)$/)
+      if (artifactRoute) identify('/api/serve/sessions/:sessionId/artifacts/:artifactId/' + artifactRoute[2], { session: sessionMatch[1] })
       if (
         artifactRoute &&
         (method === 'GET' || (method === 'HEAD' && artifactRoute[2] === 'raw'))
@@ -3008,7 +3440,7 @@ export function createPreviewService() {
         })
         return
       }
-      if (action === '' && method === 'DELETE') {
+      if (sessionAction('') && method === 'DELETE') {
         if (session.activeTurn) {
           send({ ok: false, error: 'session_running' }, 409)
           return
@@ -3024,11 +3456,12 @@ export function createPreviewService() {
           session.transport.dispose()
           for (const stream of session.streams) stream.end()
           instance.sessions.delete(session.id)
+          instance.schedules.removeSession(session.id)
           send({ ok: true, session_id: session.id })
         })
         return
       }
-      if (action === 'events' && method === 'GET') {
+      if (sessionAction('events') && method === 'GET') {
         const from = Number(url.searchParams.get('from_seq') ?? 0)
         if (!Number.isSafeInteger(from) || from < 0 || from > session.events.length) {
           send({ code: 'preview_invalid_cursor' }, 400)
@@ -3056,16 +3489,14 @@ export function createPreviewService() {
           connection: 'keep-alive',
           'x-preview-simulation': 'true',
         })
-        response.write(
-          ': preview-simulation\n\n' +
-            session.events
-              .filter((event) => event.seq > from)
-              .map((event) => `id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
-              .join('')
-        )
+        observeStream(response, instance.diagnostics, 'session', session.id, from)
+        response.write(': preview-simulation\n\n')
+        for (const event of session.events)
+          if (event.seq > from)
+            writeStream(response, `id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`, event.type, event.seq)
         session.streams.add(response)
         const heartbeat = setInterval(
-          () => response.write('event: heartbeat\ndata: {}\n\n'),
+          () => writeStream(response, 'event: heartbeat\ndata: {}\n\n', 'heartbeat'),
           CONFIG.heartbeatMs
         )
         response.on('close', () => {
@@ -3074,7 +3505,7 @@ export function createPreviewService() {
         })
         return
       }
-      if (action === 'turns' && method === 'POST') {
+      if (sessionAction('turns') && method === 'POST') {
         if (session.activeTurn || session.submission) {
           send(
             {
@@ -3093,7 +3524,8 @@ export function createPreviewService() {
               !item ||
               (item.type === 'text'
                 ? typeof item.text !== 'string'
-                : item.type === 'skill' && instance.conversation.draftReferences
+                : item.type === 'skill' &&
+                    (instance.conversation.draftReferences || PREVIEW_STARTER_SKILLS.includes(item.name))
                   ? !instance.skills.has(item.name) ||
                     instance.skills.get(item.name)?.info.path !== item.path
                   : true)
@@ -3182,24 +3614,26 @@ export function createPreviewService() {
         send({ ok: true, request_id: requestId, interaction })
         return
       }
-      if ((action === 'interrupt' || action === 'terminate') && method === 'POST') {
+      if ((sessionAction('interrupt') || sessionAction('terminate')) && method === 'POST') {
         session.submission?.cancel()
         for (const pending of session.pending)
           publish(session, 'hil_resolved', { ...pending, state: 'cancelled' })
         session.pending = []
         finish(session, 'interrupted', action === 'interrupt' ? PREVIEW_CONVERSATION.userInterruptReason : undefined)
+        instance.schedules.interrupt(session.id)
         send({ ok: true })
         return
       }
-      if (action === 'navigation' && method === 'GET') {
+      if (sessionAction('navigation') && method === 'GET') {
         send(snapshot(session))
         return
       }
-      if (action === 'queue' && method === 'GET') {
+      if (sessionAction('queue') && method === 'GET') {
         send({ messages: [] })
         return
       }
       const reconcile = action.match(/^queue\/([^/]+)\/reconcile$/)
+      if (reconcile) identify('/api/serve/sessions/:sessionId/queue/:messageId/reconcile', { session: sessionMatch[1] })
       if (reconcile && method === 'POST') {
         const messageId = decodeURIComponent(reconcile[1])
         const applied = session.events.some(
@@ -3213,15 +3647,15 @@ export function createPreviewService() {
         })
         return
       }
-      if (action === 'model' && method === 'GET') {
+      if (sessionAction('model') && method === 'GET') {
         send({ model_id: CONFIG.model, model_key: CONFIG.model, reasoning_effort: 'medium' })
         return
       }
-      if (action === 'mode' && method === 'GET') {
+      if (sessionAction('mode') && method === 'GET') {
         send({ mode: 'safe_auto', collaboration_mode: 'default' })
         return
       }
-      if (action === 'pin' && method === 'PUT') {
+      if (sessionAction('pin') && method === 'PUT') {
         if (typeof body.pinned !== 'boolean') {
           send({ code: 'invalid_pinned' }, 400)
           return
@@ -3233,7 +3667,7 @@ export function createPreviewService() {
         send({ ok: true, session_id: session.id, pinned: session.pinned })
         return
       }
-      if (action === 'archive' && method === 'PUT') {
+      if (sessionAction('archive') && method === 'PUT') {
         if (typeof body.archived !== 'boolean') {
           send({ code: 'invalid_archived' }, 400)
           return
@@ -3257,7 +3691,7 @@ export function createPreviewService() {
         })
         return
       }
-      if (action === '' && method === 'PATCH' && typeof body.title === 'string') {
+      if (sessionAction('') && method === 'PATCH' && typeof body.title === 'string') {
         if (session.title !== body.title) {
           session.title = body.title
           session.modifiedAt = Date.now() / 1000
@@ -3266,7 +3700,7 @@ export function createPreviewService() {
         return
       }
     }
-    if (path === PREVIEW_STORAGE_READ.configPath && method === 'GET') {
+    if (exact(PREVIEW_STORAGE_READ.configPath) && method === 'GET') {
       await archiveResponse(response, async (signal) => {
         await instance.storage.beforeRead('home', signal)
         if (instances.get(id) !== instance) {
@@ -3277,7 +3711,7 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === PREVIEW_STORAGE.path) {
+    if (exact(PREVIEW_STORAGE.path)) {
       if (method === 'GET') {
         await archiveResponse(response, async (signal) => {
           await instance.storage.beforeRead('workspace', signal)
@@ -3309,6 +3743,7 @@ export function createPreviewService() {
     }
     const setting = path.match(/^\/api\/serve\/settings\/([^/]+)$/)?.[1]
     if (setting === 'file-versions') {
+      identify('/api/serve/settings/file-versions')
       if (method === 'POST') {
         const controller = new AbortController()
         const abort = (): void => controller.abort()
@@ -3355,6 +3790,7 @@ export function createPreviewService() {
       return
     }
     if (setting && Object.prototype.hasOwnProperty.call(instance.settings, setting)) {
+      identify('/api/serve/settings/:setting')
       if (method === 'POST') {
         if (setting === 'permission-mode') {
           if (!['ask', 'safe_auto', 'bypassPermissions'].includes(String(body.mode))) {
@@ -3379,11 +3815,11 @@ export function createPreviewService() {
       send(instance.settings[setting])
       return
     }
-    if (path === '/api/serve/models' && method === 'GET') {
+    if (exact('/api/serve/models') && method === 'GET') {
       send({ ...MODELS, service_instance_id: `preview-${id}` })
       return
     }
-    if (path === '/api/resource/finalizations' && method === 'GET') {
+    if (exact('/api/resource/finalizations') && method === 'GET') {
       const session = instance.sessions.get(url.searchParams.get('session_id') ?? '')
       if (!session) {
         send({ code: 'session_not_found' }, 404)
@@ -3392,7 +3828,7 @@ export function createPreviewService() {
       send({ entries: [], next_cursor: null })
       return
     }
-    const turnSources = path.match(/^\/api\/assistant\/sessions\/([^/]+)\/turns\/([^/]+)\/sources$/)
+    const turnSources = matchRoute(/^\/api\/assistant\/sessions\/([^/]+)\/turns\/([^/]+)\/sources$/, '/api/assistant/sessions/:sessionId/turns/:turnId/sources', 'session')
     if (turnSources) {
       if (method !== 'GET') {
         send({ code: 'preview_method_not_allowed' }, 405)
@@ -3414,9 +3850,8 @@ export function createPreviewService() {
       send({ sources: [], markdown, answer_id: CONFIG.turnAnswerPrefix + turnId })
       return
     }
-    const assistantRead = path.match(
-      /^\/api\/assistant\/sessions\/([^/]+)\/(annotations|resources\/links|literature\/links)$/
-    )
+    const assistantRead = matchRoute(
+      /^\/api\/assistant\/sessions\/([^/]+)\/(annotations|resources\/links|literature\/links)$/, match => '/api/assistant/sessions/:sessionId/' + match[2], 'session')
     if (assistantRead && method === 'GET') {
       if (!instance.sessions.has(decodeURIComponent(assistantRead[1]))) {
         send({ code: 'session_not_found' }, 404)
@@ -3514,7 +3949,7 @@ export function createPreviewService() {
       send(session.context)
       return
     }
-    const referenceRaw = path.match(/^\/api\/serve\/sessions\/([^/]+)\/files\/raw$/)
+    const referenceRaw = matchRoute(/^\/api\/serve\/sessions\/([^/]+)\/files\/raw$/, '/api/serve/sessions/:sessionId/files/raw', 'session')
     if (referenceRaw && method === 'GET' && (instance.artifacts || instance.conversation.mixedReferences)) {
       const session = instance.sessions.get(decodeURIComponent(referenceRaw[1]))
       if (!session) {
@@ -3555,11 +3990,11 @@ export function createPreviewService() {
       })
       return
     }
-    if (path === '/api/serve/attention' && method === 'GET') {
+    if (exact('/api/serve/attention') && method === 'GET') {
       send({ epoch: `preview-${id}`, revision: 0, unread_count: 0, by_session: {}, items: [] })
       return
     }
-    const contextMatch = path.match(/^\/api\/assistant\/sessions\/([^/]+)\/context$/)
+    const contextMatch = matchRoute(/^\/api\/assistant\/sessions\/([^/]+)\/context$/, '/api/assistant/sessions/:sessionId/context', 'session')
     if (contextMatch) {
       const session = instance.sessions.get(decodeURIComponent(contextMatch[1]))
       if (!session) {
@@ -3605,19 +4040,18 @@ export function createPreviewService() {
       send(session.context)
       return
     }
-    const literatureResults = path.match(/^\/api\/literature\/([^/]+)\/ai\/results$/)
-    const literatureState = path.match(/^\/api\/literature\/([^/]+)\/ai\/state$/)
+    const literatureResults = matchRoute(/^\/api\/literature\/([^/]+)\/ai\/results$/, '/api/literature/:itemId/ai/results')
+    const literatureState = matchRoute(/^\/api\/literature\/([^/]+)\/ai\/state$/, '/api/literature/:itemId/ai/state')
     if (
-      path === '/api/v1/literatures' ||
+      exact('/api/v1/literatures') ||
       path.startsWith('/api/v1/literatures/') ||
-      path === '/api/v1/collections' ||
-      path === '/api/v1/tags' ||
+      exact('/api/v1/collections') ||
+      exact('/api/v1/tags') ||
       literatureResults ||
       literatureState
     ) {
-      const attachmentRoute = path.match(
-        /^\/api\/v1\/literatures\/([^/]+)\/attachments\/([^/]+)\/(open|content|location|records|regions)$/
-      )
+      const attachmentRoute = matchRoute(
+        /^\/api\/v1\/literatures\/([^/]+)\/attachments\/([^/]+)\/(open|content|location|records|regions)$/, match => '/api/v1/literatures/:itemId/attachments/:attachmentId/' + match[3])
       if (
         attachmentRoute &&
         (method === 'GET' || (method === 'HEAD' && attachmentRoute[3] === 'content'))
@@ -3752,9 +4186,8 @@ export function createPreviewService() {
         return
       }
       const projectId = url.searchParams.getAll('project_id').at(-1) ?? ''
-      const detailRoute = path.match(
-        /^\/api\/v1\/literatures\/([^/]+)(?:\/(notes)(?:\/([^/]+))?)?$/
-      )
+      const detailRoute = matchRoute(
+        /^\/api\/v1\/literatures\/([^/]+)(?:\/(notes)(?:\/([^/]+))?)?$/, match => '/api/v1/literatures/:itemId' + (match[2] ? '/notes' : '') + (match[3] ? '/:noteId' : ''))
       const controller = new AbortController()
       const abort = (): void => controller.abort()
       response.once('close', abort)
@@ -3800,18 +4233,18 @@ export function createPreviewService() {
           }
           await instance.literature.detail(decodeURIComponent(literatureResults[1]), '', signal)
           payload = {}
-        } else if (path === '/api/v1/literatures' && method === 'GET')
+        } else if (exact('/api/v1/literatures') && method === 'GET')
           payload = await instance.literature.list(
             parsePreviewLiteratureQuery(url.searchParams),
             signal
           )
-        else if (path === '/api/v1/literatures/counts' && method === 'GET')
+        else if (exact('/api/v1/literatures/counts') && method === 'GET')
           payload = await instance.literature.counts(projectId, signal)
-        else if (path === '/api/v1/literatures/facets' && method === 'GET')
+        else if (exact('/api/v1/literatures/facets') && method === 'GET')
           payload = await instance.literature.facets({ project_id: projectId }, signal)
-        else if (path === '/api/v1/literatures/projects' && method === 'GET')
+        else if (exact('/api/v1/literatures/projects') && method === 'GET')
           payload = await instance.literature.projects(signal)
-        else if (path === '/api/v1/literatures/tag-facets' && method === 'GET') {
+        else if (exact('/api/v1/literatures/tag-facets') && method === 'GET') {
           const scope = new URLSearchParams()
           for (const key of [
             'project_id',
@@ -3822,9 +4255,9 @@ export function createPreviewService() {
           ])
             for (const value of url.searchParams.getAll(key)) scope.append(key, value)
           payload = await instance.literature.tagFacets(parsePreviewLiteratureQuery(scope), signal)
-        } else if (path === '/api/v1/collections' && method === 'GET')
+        } else if (exact('/api/v1/collections') && method === 'GET')
           payload = await instance.literature.collections(projectId, signal)
-        else if (path === '/api/v1/tags' && method === 'GET')
+        else if (exact('/api/v1/tags') && method === 'GET')
           payload = await instance.literature.tags(signal)
         else if (detailRoute && !detailRoute[2] && method === 'GET')
           payload = await instance.literature.detail(
@@ -3870,7 +4303,7 @@ export function createPreviewService() {
       }
       return
     }
-    if (path === '/api/serve/interactions/pending' && method === 'GET') {
+    if (exact('/api/serve/interactions/pending') && method === 'GET') {
       send({
         interactions: [...instance.sessions.values()].flatMap((session) =>
           session.pending.map((item) => ({
@@ -3884,7 +4317,7 @@ export function createPreviewService() {
       })
       return
     }
-    const projectTree = path.match(/^\/api\/content\/projects\/([^/]+)\/tree$/)
+    const projectTree = matchRoute(/^\/api\/content\/projects\/([^/]+)\/tree$/, '/api/content/projects/:projectId/tree', 'project')
     if (projectTree && method === 'GET') {
       const project = instance.projects
         .all()
@@ -3924,7 +4357,7 @@ export function createPreviewService() {
       })
       return
     }
-    const pdfRecords = path.match(/^\/api\/workbench\/assets\/([^/]+)\/pdf\/records$/)
+    const pdfRecords = matchRoute(/^\/api\/workbench\/assets\/([^/]+)\/pdf\/records$/, '/api/workbench/assets/:assetId/pdf/records')
     if (pdfRecords && method === 'GET') {
       const project = instance.projects
         .all()
@@ -3962,7 +4395,7 @@ export function createPreviewService() {
       send(snapshot)
       return
     }
-    if (path === '/api/workbench/pdf/regions' && method === 'GET') {
+    if (exact('/api/workbench/pdf/regions') && method === 'GET') {
       const missing = ['path', 'project', 'revision', 'start_page', 'end_page'].filter(
         (key) => !url.searchParams.has(key)
       )
@@ -3997,7 +4430,8 @@ export function createPreviewService() {
       '/api/content/events',
     ]
     if (resourcePaths.includes(path)) {
-      const listing = path === RESOURCE_LIST_SCOPE.path && method === 'GET'
+      identify(path)
+      const listing = exact(RESOURCE_LIST_SCOPE.path) && method === 'GET'
       const listingProject = url.searchParams.getAll('project').slice(-1)[0]
       if (listing && !listingProject) {
         send(
@@ -4012,7 +4446,7 @@ export function createPreviewService() {
       }
       const requestedProject = listing
         ? listingProject
-        : path === '/api/resource/reveal'
+        : exact('/api/resource/reveal')
           ? typeof body.project === 'string'
             ? body.project
             : undefined
@@ -4041,7 +4475,7 @@ export function createPreviewService() {
         instance.versions.set(project.id, versions)
       }
       const filePath = url.searchParams.get('path') ?? ''
-      if (path === '/api/resource/reveal' && method === 'POST') {
+      if (exact('/api/resource/reveal') && method === 'POST') {
         if (
           typeof body.path !== 'string' ||
           (body.project != null && typeof body.project !== 'string')
@@ -4065,11 +4499,11 @@ export function createPreviewService() {
         }
         return
       }
-      if (path === '/api/content/cursor' && method === 'GET') {
+      if (exact('/api/content/cursor') && method === 'GET') {
         send({ epoch: instance.epoch, last_seq: instance.fileEvents.length })
         return
       }
-      if (path === '/api/content/events' && method === 'GET') {
+      if (exact('/api/content/events') && method === 'GET') {
         const from = Number(url.searchParams.get('from_seq') ?? 0)
         if (!Number.isSafeInteger(from) || from < 0 || from > instance.fileEvents.length) {
           send({ code: 'preview_invalid_cursor' }, 400)
@@ -4080,26 +4514,24 @@ export function createPreviewService() {
           'cache-control': 'no-store',
           connection: 'keep-alive',
         })
-        response.write(
-          ': preview-file-events\n\n' +
-            instance.fileEvents
-              .filter((event) => event.project_id === project.id && event.seq > from)
-              .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-              .join('')
-        )
+        observeStream(response, instance.diagnostics, 'file', project.id, from)
+        response.write(': preview-file-events\n\n')
+        for (const event of instance.fileEvents)
+          if (event.project_id === project.id && event.seq > from)
+            writeStream(response, `data: ${JSON.stringify(event)}\n\n`, event.kind, event.seq)
         instance.fileStreams.set(response, project.id)
-        const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), CONFIG.heartbeatMs)
+        const heartbeat = setInterval(() => writeStream(response, ': heartbeat\n\n', 'heartbeat'), CONFIG.heartbeatMs)
         response.on('close', () => {
           clearInterval(heartbeat)
           instance.fileStreams.delete(response)
         })
         return
       }
-      if (path === '/api/resource/count' && method === 'GET') {
+      if (exact('/api/resource/count') && method === 'GET') {
         send({ files: files.manifest().length })
         return
       }
-      if ((path === '/api/resource/tree' || path === '/api/resource/list') && method === 'GET') {
+      if ((exact('/api/resource/tree') || exact('/api/resource/list')) && method === 'GET') {
         const owner = projectBrowsing(instance, project.id)
         if (path.endsWith('/list')) {
           await archiveResponse(response, async (signal) => {
@@ -4141,11 +4573,11 @@ export function createPreviewService() {
         }
         return
       }
-      if (path === '/api/workbench/open' && method === 'GET') {
+      if (exact('/api/workbench/open') && method === 'GET') {
         send(documentProjection(files.read(filePath), project.id, versions))
         return
       }
-      if (path === '/api/workbench/pdf/regions' && method === 'GET') {
+      if (exact('/api/workbench/pdf/regions') && method === 'GET') {
         const file = files.read(filePath)
         const manifest = await previewPdfRegions(
           file,
@@ -4167,17 +4599,17 @@ export function createPreviewService() {
         return
       }
       if (
-        (path === '/api/workbench/content' ||
-          path === '/api/resource/raw' ||
-          path === '/api/resource/read') &&
+        (exact('/api/workbench/content') ||
+          exact('/api/resource/raw') ||
+          exact('/api/resource/read')) &&
         method === 'GET'
       ) {
         const entry = files.fileInfo(filePath)
-        if (path === '/api/workbench/content' && url.searchParams.get('preview') === 'true') {
+        if (exact('/api/workbench/content') && url.searchParams.get('preview') === 'true') {
           send({ code: 'preview_conversion_unavailable' }, 501)
           return
         }
-        if (path === '/api/workbench/content' && instance.content) {
+        if (exact('/api/workbench/content') && instance.content) {
           const controller = new AbortController()
           const abort = (): void => controller.abort()
           response.once('close', abort)
@@ -4213,7 +4645,7 @@ export function createPreviewService() {
           }
         }
         const file = files.read(filePath)
-        if (path === '/api/resource/read') send({ content: new TextDecoder().decode(file.bytes) })
+        if (exact('/api/resource/read')) send({ content: new TextDecoder().decode(file.bytes) })
         else {
           response.writeHead(200, {
             'content-type': documentProjection(file, project.id).media_type,
@@ -4224,7 +4656,7 @@ export function createPreviewService() {
         }
         return
       }
-      if (path === '/api/workbench/content' && method === 'PUT') {
+      if (exact('/api/workbench/content') && method === 'PUT') {
         if (request.headers['content-type']?.split(';', 1)[0] !== 'application/octet-stream') {
           send({ detail: 'binary_content_type_required' }, 415)
           return
@@ -4250,7 +4682,7 @@ export function createPreviewService() {
         response.end()
         return
       }
-      if (path === '/api/resource/write' && method === 'POST') {
+      if (exact('/api/resource/write') && method === 'POST') {
         if (typeof body.path !== 'string' || typeof body.content !== 'string') {
           send({ code: 'invalid_content' }, 400)
           return
@@ -4260,7 +4692,7 @@ export function createPreviewService() {
         send({ ok: true, node: resourceNode(node) })
         return
       }
-      if (path === '/api/resource/node' && method === 'POST') {
+      if (exact('/api/resource/node') && method === 'POST') {
         const name = typeof body.name === 'string' ? body.name : ''
         const parent = typeof body.parent === 'string' ? body.parent : ''
         const source = typeof body.path === 'string' ? body.path : ''

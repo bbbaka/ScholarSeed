@@ -22,6 +22,7 @@ import {
   type SessionOrderPlacement,
 } from '../../api'
 import { sessionDisplayTitle } from '../../session'
+import { currentShortcutPlatform, formatShortcut } from '../../shortcuts'
 import emptyFolder from '../../assets/empty_img.webp'
 import { createScrollbarVisibility } from '../../components/business/scroll'
 import { IconFont } from '../../components/primitive/Iconfont'
@@ -64,6 +65,8 @@ import {
 } from './drag'
 import { SessionDropIndicator } from './Indicator'
 import { PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
+import type { SessionGroup, SessionGroupSource } from '../../contracts/features'
+import { groupSessions, unrepresentedGroups } from './grouping'
 
 const PANEL_PERCENTAGE_TOTAL = 100
 const ARCHIVE_MAX_PERCENTAGE = 50
@@ -82,7 +85,13 @@ const SESSION_CHANGE_MESSAGES = {
 } as const
 type SessionChangeMessages = (typeof SESSION_CHANGE_MESSAGES)[keyof typeof SESSION_CHANGE_MESSAGES]
 
-export function ProjectNavigation(): React.JSX.Element {
+export function ProjectNavigation({
+  actions,
+  sessionGroups,
+}: {
+  actions?: React.ReactNode
+  sessionGroups?: SessionGroupSource[]
+}): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('layout')
   const { t: shellText } = useTranslation('shell')
@@ -91,6 +100,7 @@ export function ProjectNavigation(): React.JSX.Element {
   const { t: assistantText } = useTranslation('assistant')
   const project = selectedProject(state)
   const projectPath = project?.path
+  const projectId = project?.id
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [archiveSizes, setArchiveSizes] = useState<number[] | null>(null)
@@ -137,6 +147,9 @@ export function ProjectNavigation(): React.JSX.Element {
   const selectedArchive = useRef(state.archivedSession?.session_id)
   selectedArchive.current = state.archivedSession?.session_id
   const [rows, setRows] = useState<ServeSession[]>([])
+  const [groups, setGroups] = useState<SessionGroup[]>([])
+  const [openingGroup, setOpeningGroup] = useState<string | null>(null)
+  const [groupOpenFailed, setGroupOpenFailed] = useState(false)
   const [taskScrollbarVisible, setTaskScrollbarVisible] = useState(false)
   const [taskScrollbar] = useState(() =>
     createScrollbarVisibility(setTaskScrollbarVisible, window.setTimeout, window.clearTimeout)
@@ -178,6 +191,7 @@ export function ProjectNavigation(): React.JSX.Element {
     setArchiveOpen(false)
     setArchiveSizes(null)
     setRows([])
+    setGroups([])
     return () => {
       projectEpoch.current += 1
     }
@@ -186,29 +200,49 @@ export function ProjectNavigation(): React.JSX.Element {
     let alive = true
     const epoch = ++catalogEpoch.current
     setFailed(false)
-    if (!projectPath) return
-    void listAllSessions(
-      {
-        scope: 'project',
-        projectPath,
-        limit: HOME_TASK_LIMIT,
-      },
-      () => alive && epoch === catalogEpoch.current
-    ).then((catalog) => {
-      if (!alive || epoch !== catalogEpoch.current) return
-      setLoading(false)
-      setFailed(!catalog)
-      if (catalog) {
-        restoreTaskFocus.current =
-          [...taskActions.current].find(([, button]) => button === document.activeElement)?.[0] ??
-          null
-        setRows(catalog)
-      }
-    })
+    if (!projectPath || !projectId) return
+    void Promise.all([
+      listAllSessions(
+        {
+          scope: 'project',
+          projectPath,
+          limit: HOME_TASK_LIMIT,
+        },
+        () => alive && epoch === catalogEpoch.current
+      ),
+      Promise.all((sessionGroups ?? []).map((source) => source.load(projectId))).then((results) =>
+        results.flat()
+      ),
+    ])
+      .then(([catalog, loadedGroups]) => {
+        if (!alive || epoch !== catalogEpoch.current) return
+        setLoading(false)
+        setFailed(!catalog)
+        if (catalog) {
+          restoreTaskFocus.current =
+            [...taskActions.current].find(([, button]) => button === document.activeElement)?.[0] ??
+            null
+          setRows(catalog)
+          setGroups(loadedGroups)
+        }
+      })
+      .catch(() => {
+        if (alive && epoch === catalogEpoch.current) {
+          setFailed(true)
+          setLoading(false)
+        }
+      })
     return () => {
       alive = false
     }
-  }, [projectPath, state.activeSession, state.sessionCatalogRevision, revision])
+  }, [
+    projectPath,
+    projectId,
+    state.activeSession,
+    state.sessionCatalogRevision,
+    revision,
+    sessionGroups,
+  ])
   useEffect(() => {
     const refresh = (): void => setRevision((value) => value + 1)
     window.addEventListener('scholarseed:refresh-session-list', refresh)
@@ -330,21 +364,47 @@ export function ProjectNavigation(): React.JSX.Element {
     if (selectedArchive.current === row.session_id) act.openSession(row.session_id)
     window.dispatchEvent(new Event('scholarseed:refresh-session-list'))
   }
-  const visible = rows.map((row) => {
-    const live = findSessionNode(state.sessions, row.session_id)
-    if (!live) return row
-    return {
-      ...row,
-      title: live.title,
-      title_fallback: live.title_fallback,
-      running: live.status === 'running',
-      waiting: live.status === 'waiting',
+  const visible = groupSessions(
+    rows.map((row) => {
+      const live = findSessionNode(state.sessions, row.session_id)
+      if (!live) return row
+      return {
+        ...row,
+        title: live.title,
+        title_fallback: live.title_fallback,
+        running: live.status === 'running',
+        waiting: live.status === 'waiting',
+      }
+    }),
+    groups,
+    state.activeSession
+  )
+  const openGroup = async (group: SessionGroup): Promise<void> => {
+    if (!group.open || openingGroup !== null) return
+    const epoch = projectEpoch.current
+    setOpeningGroup(group.id)
+    setGroupOpenFailed(false)
+    try {
+      const sessionId = await group.open()
+      if (epoch !== projectEpoch.current) return
+      act.openSession(sessionId)
+      setRevision((value) => value + 1)
+    } catch {
+      if (epoch === projectEpoch.current) setGroupOpenFailed(true)
+    } finally {
+      setOpeningGroup(null)
     }
-  })
+  }
   const renderTasks = (items: ServeSession[]): React.JSX.Element => (
     <Tasks
       rows={items}
       pending={pinning}
+      opening={openingGroup !== null}
+      onOpen={(row) => {
+        const group = groups.find((item) => item.id === row.navigationGroup)
+        if (group?.open) void openGroup(group)
+        else act.openSession(row.session_id)
+      }}
       projectPath={projectPath}
       detaching={changingSession?.id}
       draggedSession={draggedSession}
@@ -484,16 +544,29 @@ export function ProjectNavigation(): React.JSX.Element {
               <Plus />
               {t('newTask')}
             </Button>
-            <Button
-              variant="ghost"
-              data-testid="project-search"
-              aria-expanded={state.globalSearchOpen}
-              className="w-full !h-[var(--vds-project-navigation-action-height)] !justify-start !gap-[var(--vds-navigation-button-gap)] !px-[var(--vds-space-2)] !font-[var(--vds-fw-regular)] !leading-[var(--vds-control-label-line-height)]"
-              onClick={() => set({ globalSearchOpen: true, globalSearchMode: 'all' })}
+            <Tooltip
+              content={shellText('chrome.projectSearchShortcut', {
+                shortcut: formatShortcut(
+                  { key: 'k', modifiers: ['primary'] },
+                  currentShortcutPlatform()
+                ),
+              })}
+              side="right"
+              portalled
+              className="!w-full"
             >
-              <Search className="text-[var(--vds-text-7)]" />
-              {shellText('chrome.search')}
-            </Button>
+              <Button
+                variant="ghost"
+                data-testid="project-search"
+                aria-expanded={state.globalSearchOpen}
+                className="w-full !h-[var(--vds-project-navigation-action-height)] !justify-start !gap-[var(--vds-navigation-button-gap)] !px-[var(--vds-space-2)] !font-[var(--vds-fw-regular)] !leading-[var(--vds-control-label-line-height)]"
+                onClick={() => set({ globalSearchOpen: true, globalSearchMode: 'all' })}
+              >
+                <Search className="text-[var(--vds-text-7)]" />
+                {shellText('chrome.search')}
+              </Button>
+            </Tooltip>
+            {actions}
             <Button
               variant="ghost"
               data-testid="project-library"
@@ -618,14 +691,30 @@ export function ProjectNavigation(): React.JSX.Element {
                     {t('loadFailed')}
                   </Button>
                 )}
-                {!loading && !failed && !visible.length && (
-                  <EmptyState
-                    image={{ src: emptyFolder, alt: '' }}
-                    title={t('emptyTasks')}
-                    className="[&_.vds-empty-state\_\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\_\_title]:font-[var(--vds-fw-medium)] [&_.vds-empty-state\_\_title]:text-[var(--vds-text-secondary)]"
-                  />
-                )}
+                {!loading &&
+                  !failed &&
+                  !visible.length &&
+                  !unrepresentedGroups(visible, groups).length && (
+                    <EmptyState
+                      image={{ src: emptyFolder, alt: '' }}
+                      title={t('emptyTasks')}
+                      className="[&_.vds-empty-state\_\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\_\_title]:font-[var(--vds-fw-medium)] [&_.vds-empty-state\_\_title]:text-[var(--vds-text-secondary)]"
+                    />
+                  )}
                 {renderTasks(unpinnedTasks)}
+                {groupOpenFailed && <Alert tone="error" description={t('loadFailed')} />}
+                {unrepresentedGroups(visible, groups).map((group) => (
+                  <Button
+                    key={group.id}
+                    variant="ghost"
+                    className="w-full !h-[var(--vds-project-task-height)] !justify-start !px-[var(--vds-space-3)] !font-[var(--vds-fw-regular)]"
+                    disabled={openingGroup !== null}
+                    onClick={() => void openGroup(group)}
+                  >
+                    {group.icon}
+                    <EllipsisText>{group.title}</EllipsisText>
+                  </Button>
+                ))}
               </div>
             </ScrollArea>
           </section>
@@ -687,12 +776,12 @@ export function ProjectNavigation(): React.JSX.Element {
               {archivedRows?.map((row) => (
                 <div
                   key={row.session_id}
-                  className="group/archive relative flex h-[var(--vds-project-task-height)] min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] pr-[var(--vds-space-2)] hover:bg-[var(--vds-surface-hover)] [&:has([aria-current=true])]:bg-[var(--vds-surface-hover)]"
+                  className="group/archive relative flex min-h-[var(--vds-project-task-height)] min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] pr-[var(--vds-space-2)] hover:bg-[var(--vds-surface-hover)] [&:has([aria-current=true])]:bg-[var(--vds-surface-hover)]"
                   data-testid={`project-archived-task-${row.session_id}`}
                 >
                   <Button
                     variant="ghost"
-                    className="h-full min-w-0 flex-1 !justify-start !px-[var(--vds-space-3)] !bg-transparent text-[var(--vds-text-secondary)] hover:!bg-transparent active:!bg-transparent"
+                    className="!h-auto min-h-[var(--vds-project-task-height)] min-w-0 flex-1 !justify-start !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] !bg-transparent text-[var(--vds-text-secondary)] hover:!bg-transparent active:!bg-transparent"
                     aria-current={state.archivedSession?.session_id === row.session_id}
                     onClick={() =>
                       set((current) => ({
@@ -731,9 +820,13 @@ export function ProjectNavigation(): React.JSX.Element {
                       }))
                     }
                   >
-                    <EllipsisText tooltipPortalled tooltipSide="right" tooltipAlign="center">
-                      {sessionDisplayTitle(row, assistantText)}
-                    </EllipsisText>
+                    {groups
+                      .find((group) => group.sessionIds.includes(row.session_id))
+                      ?.renderArchivedLabel?.(row) ?? (
+                      <EllipsisText tooltipPortalled tooltipSide="right" tooltipAlign="center">
+                        {sessionDisplayTitle(row, assistantText)}
+                      </EllipsisText>
+                    )}
                   </Button>
                   <div className="pointer-events-none absolute right-[var(--vds-space-2)] flex shrink-0 items-center gap-[var(--vds-space-1)] opacity-0 group-hover/archive:static group-hover/archive:pointer-events-auto group-hover/archive:opacity-[var(--vds-opacity-full)] group-focus-within/archive:static group-focus-within/archive:pointer-events-auto group-focus-within/archive:opacity-[var(--vds-opacity-full)]">
                     <Tooltip content={archiveText('taskArchive.restoreTask')} portalled>
@@ -759,6 +852,9 @@ export function ProjectNavigation(): React.JSX.Element {
                           set({
                             confirmDelete: {
                               label: row.title,
+                              description: groups
+                                .find((group) => group.sessionIds.includes(row.session_id))
+                                ?.renderDeleteDescription?.(row),
                               title_fallback: row.title_fallback,
                               sessionId: row.session_id,
                               surface: 'assistant',

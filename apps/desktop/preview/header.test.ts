@@ -50,7 +50,6 @@ test('headless workbench chrome regression: public controls, assets navigation, 
           const dictionary = parameters.get('language') === 'en' ? en : zh
           const translate = createLocalization(parameters.get('language') === 'en' ? 'en' : 'zh', { zh: { preview: zh }, en: { preview: en } }).getFixedT(null, 'preview')
           function Fixture() {
-            const [materials, setMaterials] = useState(false)
             const [dock, setDock] = useState('detached')
             const [help, setHelp] = useState(false)
             const [width, setWidth] = useState(null)
@@ -62,9 +61,9 @@ test('headless workbench chrome regression: public controls, assets navigation, 
             const [scene, setScene] = useState(parameters.get('scene') ?? 'home-states')
             return <Dialog open modal={false}><DialogContent hideCloseButton className="!inset-0 !h-full !w-full !max-w-none !transform-none !rounded-none !overflow-auto !grid-rows-[auto_auto_minmax(0,1fr)]">
               {dock === 'docked' && <PdfeDivider label={dictionary.resizeWorkbench} onResize={async width => setWidth(width)} onError={() => { throw new Error('unexpected resize failure') }} />}
-              <PdfeHeader materials={materials} dock={dock} pending={false} translate={translate} onSection={section => setMaterials(section === 'materials')} onHelp={() => setHelp(true)} onDock={() => setDock(dock === 'docked' ? 'detached' : 'docked')} onReset={() => {}} onReload={() => setReloads(value => value + 1)} onClose={() => {}} />
+              <PdfeHeader dock={dock} pending={false} translate={translate} onHelp={() => setHelp(true)} onDock={() => setDock(dock === 'docked' ? 'detached' : 'docked')} onReload={() => setReloads(value => value + 1)} />
               <div><PdfeControls theme={theme} language={language} login={login} accountControl={!parameters.has('noLogin')} pending={parameters.has('pending')} translate={translate} onTheme={setTheme} onLanguage={setLanguage} onLogin={setLogin} /><span className="sr-only"><output data-testid="public-control-values">{login + '|' + theme + '|' + language}</output><output data-testid="reload-count">{reloads}</output><output data-testid="resized-width">{width}</output></span></div>
-              <div className="min-h-0 overflow-auto"><PdfeNavigation pages={PREVIEW_CATALOG.filter(page => page.launch?.kind !== 'components')} selected={selected} activePage={selected.id} scene={scene} searching={false} pending={false} translate={translate} stateLabel={state => dictionary['state_' + state] ?? state} onSelect={setSelected} onLaunch={(page, scene) => { setSelected(page); setScene(scene) }} /></div>
+              <div className="min-h-0 overflow-auto"><PdfeNavigation manifest={null} pages={PREVIEW_CATALOG.filter(page => page.launch?.kind !== 'components')} selected={selected} activePage={selected.id} scene={scene} autoExpandKey={null} pending={false} translate={translate} stateLabel={state => dictionary['state_' + state] ?? state} onSelect={setSelected} onLaunch={(page, scene) => { setSelected(page); setScene(scene) }} /></div>
               <Dialog open={help} onOpenChange={setHelp}><DialogContent><DialogHeader><DialogTitle>{dictionary.guide}</DialogTitle></DialogHeader></DialogContent></Dialog>
             </DialogContent></Dialog>
           }
@@ -165,6 +164,14 @@ test('headless workbench chrome regression: public controls, assets navigation, 
     await actions.getByRole('button', { name: dictionary.reload, exact: true }).click()
     await expect(page.getByTestId('reload-count')).toHaveText('1')
     const controls = page.getByRole('group', { name: dictionary.publicControls })
+    const settings = page.getByTestId('preview-settings-toggle')
+    await expect(settings).toHaveAttribute('aria-expanded', 'false')
+    await expect(controls).toBeHidden()
+    await expect(settings).toContainText(dictionary.mockLoggedIn)
+    await expect(settings).toContainText(dictionary[theme as 'light' | 'dark'])
+    await expect(settings).toContainText(language === 'zh' ? dictionary.chinese : dictionary.english)
+    await settings.press('Enter')
+    await expect(settings).toHaveAttribute('aria-expanded', 'true')
     const controlBounds = await controls.boundingBox()
     assert.ok(controlBounds && controlBounds.x >= 0 && controlBounds.x + controlBounds.width <= width)
     await controls.getByRole('combobox', { name: dictionary.loginState }).click()
@@ -182,12 +189,9 @@ test('headless workbench chrome regression: public controls, assets navigation, 
     await expect(page.getByTestId('public-control-values')).toHaveText('ready|' + theme + '|' + (language === 'zh' ? 'en' : 'zh'))
     await controls.getByRole('combobox', { name: dictionary.language }).click()
     await page.getByRole('option', { name: language === 'zh' ? dictionary.chinese : dictionary.english, exact: true }).click()
-    const materials = page.getByRole('tab', { name: dictionary.componentsEntry, exact: true })
-    await materials.click()
-    await expect(materials).toHaveAttribute('aria-selected', 'true')
-    const features = page.getByRole('tab', { name: dictionary.featureSection, exact: true })
-    await features.click()
-    await expect(features).toHaveAttribute('aria-selected', 'true')
+    await settings.press('Space')
+    await expect(settings).toHaveAttribute('aria-expanded', 'false')
+    await expect(controls).toBeHidden()
     await actions.getByRole('button', { name: dictionary.dockWorkbench, exact: true }).click()
     await expect(actions.getByRole('button', { name: dictionary.detachWorkbench, exact: true })).toBeVisible()
     const divider = page.getByRole('separator', { name: dictionary.resizeWorkbench, exact: true })
@@ -240,10 +244,18 @@ test('headless workbench chrome regression: public controls, assets navigation, 
     await page.screenshot({ path: join(OUTPUT, language + '-' + theme + '-' + width + '.png') })
   }
   await page.goto(fixture.url + '__pdfe-header.html?language=en&theme=light&pending')
+  const settings = page.getByTestId('preview-settings-toggle')
+  await settings.click()
+  await page.reload()
+  await expect(settings).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByRole('group', { name: en.publicControls }).getByRole('combobox')).toHaveCount(3)
   for (const control of await page.getByRole('group', { name: en.publicControls }).getByRole('combobox').all()) await expect(control).toBeDisabled()
   await page.goto(fixture.url + '__pdfe-header.html?language=en&theme=light&noLogin')
   await expect(page.getByRole('combobox', { name: en.loginState })).toHaveCount(0)
+  await settings.click()
+  await expect(settings).not.toContainText(en.mockLoggedIn)
+  await page.reload()
+  await expect(settings).toHaveAttribute('aria-expanded', 'false')
   await page.goto(fixture.url + '__pdfe-header.html?language=en&theme=light&scene=home-create')
   await expect(page.getByTestId('preview-scene-page-home-home-create')).toHaveAttribute('aria-current', 'page')
   await expect(page.getByTestId('preview-scene-page-home-home-empty')).toHaveCount(0)

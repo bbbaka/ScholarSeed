@@ -5,7 +5,7 @@ description: >-
   Use ScholarSeed's Bridge, guide users to supported product destinations, and
   choose official conversation components. Load for project resources and papers,
   PDF evidence and retrieval, session history, file delivery and imports, task
-  plans and MCP settings, user-clicked navigation, or when structured display or
+  plans, scheduled tasks and MCP settings, user-clicked navigation, or when structured display or
   interaction materially improves the result. Load when the user wants to pick
   from displayed options and continue with their choice, even if no card was requested.
   Skip for self-contained text answers and discussion that requires no product operation.
@@ -23,6 +23,7 @@ reference to another; do not preload all three.
 | Read or change product state, retrieve evidence, publish files, import into a library, manage plans or MCP | [ScholarSeed Bridge](references/scholarseed-bridge/README.md) |
 | Give the user a clickable entry to a source, result, or published file | [ScholarSeed Frontend](references/scholarseed-frontend/README.md) |
 | Compare and pick from displayed rows, show a chart or native result card, or edit a task Canvas | [ScholarSeed Chat UI](references/scholarseed-chat-ui/README.md) |
+| Create a scheduled task for the current project | [Scheduled tasks](references/schedules.md) |
 
 For file-only transfer or processing, read the [file-artifacts guide](references/scholarseed-bridge/guides/artifacts.md)
 and the Bridge contract for publication when needed. File bytes are not research

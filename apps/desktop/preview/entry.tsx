@@ -1,7 +1,9 @@
-import { installPreviewBridge, PREVIEW_DIAGNOSTIC_EVENT } from './bridge.ts'
+import { installPreviewBridge, PREVIEW_DIAGNOSTIC_EVENT, previewInstanceGeneration } from './bridge.ts'
+import { isPdfeEnvironmentDiagnostic } from '../src/pdfe.ts'
 import { PREVIEW_CATALOG } from './catalog.ts'
 import zh from './locales/zh.json'
 import en from './locales/en.json'
+import { previewPdfFrames } from './pdf.ts'
 
 const ALLOWED_NAVIGATION_PROTOCOLS = new Set(['http:', 'https:'])
 
@@ -41,6 +43,17 @@ async function startPreview(): Promise<void> {
     )?.id ??
     PREVIEW_CATALOG[0].id
   await installPreviewBridge()
+  const scene = PREVIEW_CATALOG.find((page) => page.id === pageId)?.scenarios.find((item) => item.id === query.get('scene'))
+  if (scene?.simulation?.browser?.surface?.paperPdf) {
+    window.scholarseed.browser.frames = previewPdfFrames(window.scholarseed.browser)
+  }
+  const native = window.pdfe
+  const generation = previewInstanceGeneration()
+  window.addEventListener(PREVIEW_DIAGNOSTIC_EVENT, (event) => {
+    const code: unknown = event instanceof CustomEvent ? event.detail?.kind : undefined
+    if (isPdfeEnvironmentDiagnostic(code)) void native.recordDiagnosticEnvironment(generation, code)
+      .catch(() => console.warn('[pdfe] environment diagnostic rejected'))
+  })
   if (window.pdfe?.kind === 'product') {
     const { mountPreviewHost } = await import('./host')
     mountPreviewHost(pageId)

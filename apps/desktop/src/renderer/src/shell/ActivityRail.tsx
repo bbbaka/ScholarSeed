@@ -2,7 +2,7 @@ import { Onboarding } from '../contracts/onboarding'
 import { FEEDBACK_RECORDER_START_EVENT } from '../../../feedback'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Blocks, Box, LibraryBig } from 'lucide-react'
+import { Blocks, Box, LibraryBig, Compass } from 'lucide-react'
 
 import { accountDisplayText } from '../account'
 import { featureRegistry } from '../app/composition'
@@ -35,9 +35,10 @@ const HOME_ACTIVITY_ITEM: ActivityItem = {
   order: 0,
 }
 /** 首页空间只保留全局面条目：无项目上下文的图标表达不了「进入某个项目」。 */
-const HOME_SPACE_KEYS = ['home', 'literature', 'skills']
+const HOME_SPACE_KEYS = ['home', 'discovery', 'literature', 'skills']
 const ACTIVITY_ICON_BY_KEY: Partial<Record<string, React.JSX.Element>> = {
   home: <Box size={MENU_ICON_SIZE} strokeWidth={1.45} />,
+  discovery: <Compass size={MENU_ICON_SIZE} strokeWidth={1.45} />,
   skills: <Blocks size={MENU_ICON_SIZE} />,
   literature: <LibraryBig size={MENU_ICON_SIZE} strokeWidth={1.45} />,
 }

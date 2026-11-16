@@ -2,7 +2,11 @@ import { createLocalization } from '../../../../localization/engine.ts'
 import english from '../../../../localization/locales/en/components.json' with { type: 'json' }
 import chinese from '../../../../localization/locales/zh/components.json' with { type: 'json' }
 import { LOCALES } from '../../../../localization/catalog.ts'
-import { SYSTEM_LANGUAGE_MODE } from '../../../../preferences.ts'
+import {
+  SYSTEM_LANGUAGE_MODE,
+  PREFERENCE_THEMES,
+  DEFAULT_RENDERER_PREFERENCES,
+} from '../../../../preferences.ts'
 import {
   MENU_ACTION,
   type AccountMenuAction,
@@ -66,6 +70,22 @@ export function accountMenuItems(view: AccountMenuView): Exclude<MenuItem, { kin
   if (view.availableActions.includes(MENU_ACTION.creditsMore))
     items.push(action(MENU_ACTION.creditsMore, translate('accountMenu.creditsMore')))
   items.push({ kind: 'separator', id: 'account.preferences.separator' })
+  if (view.availableActions.includes(MENU_ACTION.appearance)) {
+    items.push({
+      kind: 'submenu',
+      id: MENU_ACTION.appearance,
+      label: translate('preferences.appearance'),
+      items: PREFERENCE_THEMES.map((theme) => ({
+        kind: 'action',
+        id: `${MENU_ACTION.appearance}.${theme}`,
+        actionId: MENU_ACTION.appearance,
+        label: translate(theme === 'system' ? 'accountMenu.system' : `preferences.${theme}`),
+        disabled: view.logoutBusy,
+        checked: theme === (view.theme ?? DEFAULT_RENDERER_PREFERENCES.theme),
+        value: { kind: 'choice', value: theme },
+      })),
+    })
+  }
   if (view.availableActions.includes(MENU_ACTION.language)) {
     const system = view.languageMode === SYSTEM_LANGUAGE_MODE
     const systemLabel = translate('preferences.followSystemLanguage')

@@ -1,3 +1,5 @@
+import { MemorySettings } from '../../features/memory/Settings'
+import { useMemory } from '../../features/memory/context'
 import { availabilityPolicy } from '../../app/policy'
 import { TranslationSettings } from '../../features/translation/Settings'
 import { GeneralSettings } from './General'
@@ -45,6 +47,7 @@ import React from 'react'
 import {
   Archive,
   Bell,
+  Brain,
   BrainCircuit,
   Copy,
   CircleQuestionMark,
@@ -259,6 +262,7 @@ function formatUpdateDiagnosis(diagnosis: RendererUpdateDiagnosis): string {
 }
 
 type AccountPanelNavKey =
+  | 'memory'
   | 'general'
   | 'translation'
   | 'prompts'
@@ -280,6 +284,8 @@ function accountPanelNavLabel(
   browserText: TFunction<'browser'>
 ): string {
   switch (key) {
+    case 'memory':
+      return t('accountPanel.nav.memory')
     case 'general':
       return t('followUp.general')
     case 'translation':
@@ -325,6 +331,7 @@ const NAV_ITEMS: {
   { id: 'notifications', labelKey: 'notifications', lucideIcon: Bell },
   { id: 'translation', labelKey: 'translation', lucideIcon: Globe },
   { id: 'prompts', labelKey: 'prompts', icon: 'sparkle' },
+  { id: 'memory', labelKey: 'memory', lucideIcon: Brain },
   { id: 'models', labelKey: 'models', lucideIcon: BrainCircuit },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
   { id: 'browser', labelKey: 'browser', lucideIcon: Globe },
@@ -338,12 +345,11 @@ const NAV_ITEMS: {
 
 const VISIBLE_NAV_ITEMS = NAV_ITEMS.filter((item) => availabilityPolicy.settingsAvailable(item.id))
 
-function visiblePage(page: AccountSettingsPage): AccountSettingsPage {
+function visiblePage(page: AccountSettingsPage, memoryAvailable = false): AccountSettingsPage {
+  const items = VISIBLE_NAV_ITEMS.filter((item) => item.id !== 'memory' || memoryAvailable)
   if (page === 'model-settings') return 'models'
   // 隐藏页与未知页统一回落到第一个可见入口，保证侧栏选中项与右侧内容一致
-  return VISIBLE_NAV_ITEMS.some((item) => item.id === page)
-    ? page
-    : (VISIBLE_NAV_ITEMS[0]?.id ?? 'account')
+  return items.some((item) => item.id === page) ? page : (items[0]?.id ?? 'account')
 }
 
 function SettingsNavIcon({
@@ -5114,7 +5120,8 @@ export function AccountPanel({
   const { t } = useTranslation('components')
   const { t: browserText } = useTranslation('browser')
   const { t: shortcutText } = useTranslation('shortcuts')
-  const activePage = visiblePage(page)
+  const memory = useMemory()
+  const activePage = visiblePage(page, Boolean(memory))
   return (
     <div
       className={embedded ? SETTINGS_DIALOG_SHELL_CLASS_NAME : SETTINGS_SHELL_CLASS_NAME}
@@ -5145,7 +5152,9 @@ export function AccountPanel({
           </Button>
         )}
         <nav className={SETTINGS_NAV_LIST_CLASS_NAME} aria-label={t('accountPanel.navLabel')}>
-          {VISIBLE_NAV_ITEMS.filter((item) => item.showInSidebar !== false).map((item) => {
+          {VISIBLE_NAV_ITEMS.filter(
+            (item) => item.showInSidebar !== false && (item.id !== 'memory' || memory)
+          ).map((item) => {
             const label = item.labelKey
               ? accountPanelNavLabel(item.labelKey, t, browserText)
               : shortcutText('nav')
@@ -5217,6 +5226,7 @@ export function SettingsContent({
           : 'min-h-0 !overflow-hidden !pb-0'
       )}
     >
+      {activePage === 'memory' && <MemorySettings />}
       {activePage === 'prompts' && <PromptsPage />}
       {activePage === 'translation' && <TranslationSettings />}
       {activePage === 'general' && <GeneralSettings />}

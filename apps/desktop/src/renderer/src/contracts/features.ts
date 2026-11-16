@@ -84,9 +84,11 @@ export type RouteKey =
   | 'projects'
   | 'resource'
   | 'literature'
+  | 'discovery'
   | 'writing'
   | 'browser'
   | 'skills'
+  | 'schedules'
 
 /**
  * 活动栏条目（最左侧竖条）。
@@ -154,8 +156,47 @@ export interface PanelContribution {
   key: string
   title: (i18n: i18n) => string
   /** 挂载位置。module = 二级侧栏，dock = 右侧停靠区。 */
-  slot: 'module' | 'dock' | 'navigation' | 'page'
-  render: () => ReactNode
+  slot:
+    | 'module'
+    | 'dock'
+    | 'navigation'
+    | 'page'
+    | 'project-page'
+    | 'project-action'
+    | 'conversation-header'
+    | 'conversation-title-prefix'
+    | 'conversation-title'
+    | 'conversation-overview'
+    | 'conversation-overview-icon'
+    | 'conversation-readonly-notice'
+  render: (props?: {
+    actions?: ReactNode
+    sessionGroups?: SessionGroupSource[]
+    children?: ReactNode
+    requestOverviewOpen?: (sessionId: string) => void
+  }) => ReactNode
+}
+
+export interface SessionGroupActions {
+  archive: () => void
+  remove: () => void
+}
+
+export interface SessionGroup {
+  renderActions?: (children: (actions: SessionGroupActions) => ReactNode) => ReactNode
+  id: string
+  icon?: ReactNode
+  title: string
+  entrySessionId: string
+  sessionIds: string[]
+  open?: () => Promise<string>
+  renderArchivedLabel?: (session: { title: string; created_at?: number }) => ReactNode
+  renderDeleteDescription?: (session: { title: string }) => ReactNode
+}
+
+export interface SessionGroupSource {
+  id: string
+  load: (projectId: string) => Promise<SessionGroup[]>
 }
 
 /** 命令贡献（供快捷键与命令面板使用）。 */
@@ -273,7 +314,7 @@ export type DisplayCardSupersessionPosition = 'first' | 'latest'
 export interface DisplayCardContribution {
   type: string
   /** Suggestions for a new turn appear only after completion and file delivery. */
-  placement?: 'after-artifacts'
+  placement?: 'after-artifacts' | 'answer'
   /** Render alongside adjacent artifact cards in the same turn. */
   layout?: 'artifact'
   /** Newer cards with the same key replace older snapshots in the visible transcript. */
@@ -382,6 +423,7 @@ export interface FeatureModule {
   activityItems?: ActivityItem[]
   viewerPlugins?: ViewerPlugin[]
   panels?: PanelContribution[]
+  sessionGroups?: SessionGroupSource[]
   commands?: CommandContribution[]
   documentToolbarItems?: DocumentToolbarContribution[]
   documentPanels?: DocumentPanelContribution[]
@@ -398,6 +440,7 @@ export interface FeatureRegistry {
   activityItems: ActivityItem[]
   viewers: Map<string, ViewerPlugin>
   panels: PanelContribution[]
+  sessionGroups: SessionGroupSource[]
   commands: Map<string, CommandContribution>
   documentToolbarItems: DocumentToolbarContribution[]
   documentPanels: DocumentPanelContribution[]
@@ -421,6 +464,7 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
   const commands = new Map<string, CommandContribution>()
   const activityItems: ActivityItem[] = []
   const panels: PanelContribution[] = []
+  const sessionGroups = new Map<string, SessionGroupSource>()
   const documentToolbarItems: DocumentToolbarContribution[] = []
   const documentToolbarIds = new Set<string>()
   const documentPanels: DocumentPanelContribution[] = []
@@ -437,6 +481,9 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
   const globalSurfaceIds = new Set<string>()
 
   for (const module of modules) {
+    for (const source of module.sessionGroups ?? []) {
+      if (!sessionGroups.has(source.id)) sessionGroups.set(source.id, source)
+    }
     for (const viewer of module.viewerPlugins ?? []) {
       if (viewers.has(viewer.kind)) {
         console.warn(`[features] viewer ${viewer.kind} 重复注册，忽略 ${module.id} 的贡献`)
@@ -520,6 +567,7 @@ export function composeFeatures(modules: readonly FeatureModule[]): FeatureRegis
     activityItems,
     viewers,
     panels,
+    sessionGroups: [...sessionGroups.values()],
     commands,
     documentToolbarItems,
     documentPanels,

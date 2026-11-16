@@ -21,6 +21,7 @@
     "selectProject": "Select project",
     "globalSearch": "Search project files, tasks, literature, and resources (⌘K)",
     "search": "Search",
+    "projectSearchShortcut": "Search in project ({{shortcut}})",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "collapseSidebarShortcut": "Collapse sidebar (⌘B)",

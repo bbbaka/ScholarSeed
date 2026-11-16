@@ -1,8 +1,12 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
+  ClipboardItem,
+  dialog,
   ipcMain,
   Menu,
+  nativeImage,
   screen,
   WebContentsView,
   type IpcMainEvent,
@@ -11,11 +15,19 @@ import {
 import { readFileSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { type as systemType, tmpdir } from 'node:os'
+import { FEEDBACK_SCREENSHOT_MAX_BYTES, FEEDBACK_SCREENSHOT_MIME_TYPE } from '../feedback'
+import { captureFeedbackScreenshot, writeFeedbackClipboardImage } from './feedback'
 import {
   PDFE_CHANNEL,
   PDFE_CONTROL_SIZE,
+  PDFE_DIAGNOSTIC_BUDGET,
+  PDFE_DIAGNOSTIC_ENV,
+  PDFE_DIAGNOSTIC_HEADER,
+  PDFE_DIAGNOSTIC_PATH,
   PDFE_REQUEST_TIMEOUT_MS,
   PDFE_RESET_PATH,
+  PDFE_RESTART_ENV,
+  PDFE_RESTART_EXIT,
   PDFE_SHORTCUT,
   PREVIEW_INSTANCE_PARAMETER,
   PREVIEW_SCENE_PARAMETER,
@@ -23,9 +35,12 @@ import {
   pdfeTargetUrl,
   readPdfeTarget,
   isPdfeTargetUrl,
+  isPdfeEnvironmentDiagnostic,
   pdfeDockWidth,
   pdfeWindowWidth,
   type PdfeDock,
+  type PdfeDiagnosticStatus,
+  type PdfeEnvironmentDiagnostic,
   type PdfeSurface,
   type PdfeTarget,
 } from '../pdfe'
@@ -39,6 +54,12 @@ import {
 } from '../fonts'
 import { WINDOW_FULLSCREEN_CHANNEL } from '../window'
 import { OfficeFontFiles } from './fontfiles'
+import { bindPdfeIterationReader } from './iterations'
+import {
+  PDFE_ITERATION_EDIT_ENV,
+  PDFE_ITERATION_WORKTREE_ENV,
+  type PdfeIterationSaveResult,
+} from '../iterations'
 import { validateFontCache } from './fontcache'
 import { createWorkspaceWindowOptions } from './window'
 import { installContentSecurityPolicy, mainWindowContentSecurityPolicy } from './csp'
@@ -52,7 +73,25 @@ const PRELOAD_NAME = 'preload.cjs'
 const PROFILE_PREFIX = 'scholarseed-pdfe-'
 const FONT_LIBRARY_NAME = './fonts.node'
 const PDFE_NAMESPACE = 'preview'
+const DIAGNOSTIC_GENERATION_PATTERN = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/
+const DIAGNOSTIC_GENERATIONS = 2
+const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex')
+const PNG_WIDTH_OFFSET = 16
+const PNG_HEIGHT_OFFSET = 20
+const PNG_DIMENSIONS_END = 24
+const diagnosticAccess = process.env[PDFE_DIAGNOSTIC_ENV]
+delete process.env[PDFE_DIAGNOSTIC_ENV]
+const restartAvailable = process.env[PDFE_RESTART_ENV] === '1'
+delete process.env[PDFE_RESTART_ENV]
+const iterationRoot = process.env[PDFE_ITERATION_WORKTREE_ENV]
+delete process.env[PDFE_ITERATION_WORKTREE_ENV]
+const iterationEditing =
+  process.platform === 'darwin' && process.env[PDFE_ITERATION_EDIT_ENV] === '1'
+delete process.env[PDFE_ITERATION_EDIT_ENV]
 const manifest = parsePdfeManifest(JSON.parse(readFileSync(join(__dirname, MANIFEST_NAME), 'utf8')))
+const sceneClipboard = JSON.parse(
+  readFileSync(join(__dirname, 'pdfe-clipboard.json'), 'utf8')
+) as Record<'zh' | 'en', Record<string, unknown>>
 const nativeFonts = require(FONT_LIBRARY_NAME) as {
   enumerateFonts: () => Promise<NativeFontFace[]>
 }
@@ -61,12 +100,52 @@ const caches = new Map<string, OfficeFontCache>()
 const profile = mkdtempSync(join(tmpdir(), PROFILE_PREFIX))
 const windows = new Map<PdfeSurface, BrowserWindow>()
 const views = new Map<PdfeSurface, WebContentsView>()
+const diagnosticEnvironment = new Map<string, Set<PdfeEnvironmentDiagnostic>>()
 let dock: PdfeDock = 'docked'
 let controlsVisible = true
+let screenshotRequest = 0
+let screenshot: { id: number; width: number; height: number } | undefined
 let dockWidth: number = PDFE_CONTROL_SIZE.width
 let target: PdfeTarget = manifest.initial
 let navigating = false
 let quitting = false
+let restartRequested = false
+let iterationReader: ReturnType<typeof bindPdfeIterationReader> | undefined
+let iterationDraft: 'zh' | 'en' | undefined
+
+if (iterationRoot) {
+  try {
+    iterationReader = bindPdfeIterationReader(
+      require('./lease.node'),
+      iterationRoot,
+      (document) => {
+        for (const [identity, scenes] of Object.entries(document.baseline.scenes)) {
+          const page = manifest.pages.find((entry) => entry.id === identity && !entry.components)
+          if (!page || scenes.some((scene) => !page.scenes.includes(scene)))
+            throw new Error('PDFE iteration baseline contains unknown scenes')
+        }
+      }
+    )
+  } catch {
+    console.warn('[pdfe] iteration worktree unavailable')
+  }
+}
+
+function confirmIterationDiscard(): boolean {
+  if (!iterationDraft) return true
+  const strings = iterationDraft === 'en' ? en : zh
+  const choice = dialog.showMessageBoxSync({
+    type: 'warning',
+    message: strings.iterationDiscardTitle,
+    detail: strings.iterationDiscardDetail,
+    buttons: [strings.iterationKeep, strings.iterationDiscard],
+    defaultId: 0,
+    cancelId: 0,
+  })
+  if (choice !== 1) return false
+  iterationDraft = undefined
+  return true
+}
 
 app.setName('PDFE')
 app.setPath('userData', profile)
@@ -135,7 +214,13 @@ function showControls(): void {
   views.get('controls')?.webContents.focus()
 }
 
+function clearScreenshot(): void {
+  screenshotRequest++
+  screenshot = undefined
+}
+
 async function loadTarget(next: PdfeTarget): Promise<void> {
+  clearScreenshot()
   target = next
   await Promise.all(
     [...views].map(([role, view]) =>
@@ -155,6 +240,9 @@ ipcMain.on(PDFE_CHANNEL.boot, (event) => {
       version: app.getVersion(),
       fullscreen: window.isFullScreen(),
       dock,
+      restartAvailable: role === 'controls' && restartAvailable,
+      iterationWritable:
+        role === 'controls' && iterationEditing && Boolean(iterationReader?.writable),
     }
   } catch {
     event.returnValue = null
@@ -164,6 +252,7 @@ ipcMain.handle(PDFE_CHANNEL.open, async (event, value: unknown) => {
   sender(event, 'controls')
   if (navigating) throw new Error('PDFE navigation already pending')
   const next = readPdfeTarget(manifest, value)
+  if (!confirmIterationDiscard()) return
   navigating = true
   try {
     const url = new URL(PDFE_RESET_PATH, manifest.origin)
@@ -182,9 +271,247 @@ ipcMain.handle(PDFE_CHANNEL.open, async (event, value: unknown) => {
     navigating = false
   }
 })
+ipcMain.handle(PDFE_CHANNEL.copyScene, async (event, value: unknown, locale: unknown) => {
+  sender(event, 'controls')
+  if (
+    navigating ||
+    !controlsVisible ||
+    event.senderFrame?.url !== pdfeTargetUrl(manifest, target, 'controls').href
+  )
+    throw new Error('Invalid PDFE scene copy sender')
+  const reference = readPdfeTarget(manifest, value)
+  if (locale !== undefined && locale !== 'zh' && locale !== 'en')
+    throw new Error('Invalid PDFE reference language')
+  const text =
+    sceneClipboard[locale ?? 'zh']?.[JSON.stringify([reference.pageId, reference.sceneId])]
+  if (typeof text !== 'string') throw new Error('Unknown PDFE scene reference')
+  await clipboard.writeText(text)
+})
 ipcMain.handle(PDFE_CHANNEL.reload, async (event) => {
   sender(event, 'controls')
+  if (!confirmIterationDiscard()) return
   await loadTarget(target)
+})
+ipcMain.handle(PDFE_CHANNEL.restart, (event) => {
+  requireScreenshotControls(event)
+  if (!restartAvailable || quitting || restartRequested) return
+  if (!confirmIterationDiscard()) return
+  restartRequested = true
+  setImmediate(() => app.quit())
+})
+function requireScreenshotControls(event: IpcMainInvokeEvent): void {
+  sender(event, 'controls')
+  if (
+    !controlsVisible ||
+    navigating ||
+    event.senderFrame?.url !== pdfeTargetUrl(manifest, target, 'controls').href
+  )
+    throw new Error('PDFE screenshot controls are unavailable')
+}
+
+ipcMain.handle(PDFE_CHANNEL.captureScreenshot, async (event) => {
+  requireScreenshotControls(event)
+  if (screenshot) {
+    windows.get('product')?.focus()
+    views.get('product')?.webContents.focus()
+    return
+  }
+  const product = views.get('product')?.webContents
+  if (
+    !product ||
+    product.isDestroyed() ||
+    product.getURL() !== pdfeTargetUrl(manifest, target, 'product').href
+  )
+    throw new Error('PDFE screenshot target is unavailable')
+  const id = ++screenshotRequest
+  const captured = await captureFeedbackScreenshot({ capturePage: () => product.capturePage() })
+  requireScreenshotControls(event)
+  if (
+    !captured.ok ||
+    id !== screenshotRequest ||
+    product.isDestroyed() ||
+    product.getURL() !== pdfeTargetUrl(manifest, target, 'product').href
+  )
+    throw new Error('PDFE screenshot capture failed')
+  screenshot = { id, width: captured.width, height: captured.height }
+  windows.get('product')?.focus()
+  product.focus()
+  product.send(PDFE_CHANNEL.screenshotCaptured, { id, bytes: captured.bytes })
+})
+
+function requireScreenshotProduct(event: IpcMainInvokeEvent): void {
+  sender(event, 'product')
+  if (navigating || event.senderFrame?.url !== pdfeTargetUrl(manifest, target, 'product').href)
+    throw new Error('PDFE screenshot target is unavailable')
+}
+
+ipcMain.handle(PDFE_CHANNEL.closeScreenshot, (event, id: unknown) => {
+  requireScreenshotProduct(event)
+  if (!screenshot || id !== screenshot.id) throw new Error('Invalid PDFE screenshot')
+  clearScreenshot()
+})
+
+ipcMain.handle(PDFE_CHANNEL.copyScreenshot, async (event, id: unknown, bytes: unknown) => {
+  requireScreenshotProduct(event)
+  if (
+    !screenshot ||
+    id !== screenshot.id ||
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength < PNG_DIMENSIONS_END ||
+    bytes.byteLength > FEEDBACK_SCREENSHOT_MAX_BYTES
+  )
+    throw new Error('Invalid PDFE screenshot')
+  const buffer = Buffer.from(bytes)
+  if (
+    !buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ||
+    buffer.readUInt32BE(PNG_WIDTH_OFFSET) !== screenshot.width ||
+    buffer.readUInt32BE(PNG_HEIGHT_OFFSET) !== screenshot.height
+  )
+    throw new Error('Invalid PDFE screenshot PNG')
+  const image = nativeImage.createFromBuffer(buffer)
+  if (image.isEmpty()) throw new Error('Empty PDFE screenshot')
+  const result = await writeFeedbackClipboardImage(
+    clipboard,
+    new ClipboardItem({
+      [FEEDBACK_SCREENSHOT_MIME_TYPE]: new Blob([buffer], { type: FEEDBACK_SCREENSHOT_MIME_TYPE }),
+    })
+  )
+  if (!result.ok) throw new Error('PDFE screenshot copy failed')
+})
+ipcMain.handle(PDFE_CHANNEL.diagnosticEnvironment, (event, generation: unknown, code: unknown) => {
+  const role = sender(event)
+  if (
+    event.senderFrame?.url !== pdfeTargetUrl(manifest, target, role).href ||
+    typeof generation !== 'string' ||
+    !DIAGNOSTIC_GENERATION_PATTERN.test(generation) ||
+    !isPdfeEnvironmentDiagnostic(code)
+  ) {
+    throw new Error('Invalid PDFE environment diagnostic')
+  }
+  let entries = diagnosticEnvironment.get(generation)
+  if (!entries) {
+    if (diagnosticEnvironment.size >= DIAGNOSTIC_GENERATIONS)
+      diagnosticEnvironment.delete(diagnosticEnvironment.keys().next().value!)
+    entries = new Set()
+    diagnosticEnvironment.set(generation, entries)
+  }
+  entries.add(code)
+})
+async function readDiagnostics(event: IpcMainInvokeEvent): Promise<PdfeDiagnosticStatus> {
+  sender(event, 'controls')
+  const selected = target
+  const controlsUrl = pdfeTargetUrl(manifest, selected, 'controls').href
+  if (!diagnosticAccess || navigating || event.senderFrame?.url !== controlsUrl) {
+    throw new Error('PDFE diagnostics are unavailable')
+  }
+  const url = new URL(PDFE_DIAGNOSTIC_PATH, manifest.origin)
+  url.searchParams.set(PREVIEW_INSTANCE_PARAMETER, manifest.instance)
+  const response = await fetch(url, {
+    headers: { [PDFE_DIAGNOSTIC_HEADER]: diagnosticAccess },
+    redirect: 'error',
+    signal: AbortSignal.timeout(PDFE_REQUEST_TIMEOUT_MS),
+  })
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new Error('PDFE diagnostics are unavailable')
+  }
+  const status = (await response.json()) as Partial<PdfeDiagnosticStatus> | null
+  if (
+    navigating ||
+    target !== selected ||
+    event.senderFrame?.url !== controlsUrl ||
+    !status ||
+    status.pageId !== selected.pageId ||
+    status.scene !== selected.sceneId ||
+    typeof status.generation !== 'string' ||
+    !Array.isArray(status.requests) ||
+    !Array.isArray(status.streams) ||
+    !Array.isArray(status.unhandled) ||
+    typeof status.dropped !== 'number' ||
+    !Number.isSafeInteger(status.dropped) ||
+    status.dropped < 0
+  ) {
+    throw new Error('PDFE diagnostic target changed or returned invalid data')
+  }
+  return {
+    pageId: status.pageId,
+    scene: status.scene,
+    generation: status.generation,
+    requests: status.requests,
+    streams: status.streams,
+    unhandled: status.unhandled,
+    dropped: status.dropped,
+    environment: [...(diagnosticEnvironment.get(status.generation) ?? [])],
+  }
+}
+ipcMain.handle(PDFE_CHANNEL.diagnostics, readDiagnostics)
+ipcMain.handle(
+  PDFE_CHANNEL.copyDiagnostics,
+  async (event, generation: unknown, sequences: unknown) => {
+    sender(event, 'controls')
+    if (
+      !controlsVisible ||
+      typeof generation !== 'string' ||
+      !DIAGNOSTIC_GENERATION_PATTERN.test(generation) ||
+      !Array.isArray(sequences) ||
+      !sequences.length ||
+      sequences.length > PDFE_DIAGNOSTIC_BUDGET.records ||
+      sequences.some((sequence) => !Number.isSafeInteger(sequence) || sequence <= 0) ||
+      new Set(sequences).size !== sequences.length
+    )
+      throw new Error('Invalid PDFE diagnostic copy selection')
+    const snapshot = await readDiagnostics(event)
+    if (!controlsVisible || snapshot.generation !== generation)
+      throw new Error('PDFE diagnostic copy target changed')
+    const bySequence = new Map(
+      [...snapshot.requests, ...snapshot.streams].map((record) => [record.sequence, record])
+    )
+    const records = sequences.map((sequence) => bySequence.get(sequence))
+    if (records.some((record) => !record)) throw new Error('PDFE diagnostic copy selection expired')
+    clipboard.writeText(
+      JSON.stringify(
+        { pageId: snapshot.pageId, scene: snapshot.scene, dropped: snapshot.dropped, records },
+        null,
+        2
+      )
+    )
+  }
+)
+ipcMain.handle(PDFE_CHANNEL.iterations, (event) => {
+  sender(event, 'controls')
+  try {
+    if (iterationReader) return iterationReader.read()
+  } catch {
+    throw new Error('PDFE iteration snapshot could not be read')
+  }
+  throw new Error('PDFE iteration worktree unavailable')
+})
+ipcMain.handle(
+  PDFE_CHANNEL.saveIteration,
+  (event, revision: unknown, edit: unknown): PdfeIterationSaveResult => {
+    sender(event, 'controls')
+    if (
+      navigating ||
+      quitting ||
+      !iterationEditing ||
+      !iterationReader?.writable ||
+      event.senderFrame?.url !== pdfeTargetUrl(manifest, target, 'controls').href
+    )
+      return { status: 'unavailable' }
+    return iterationReader.save(revision, edit)
+  }
+)
+ipcMain.handle(PDFE_CHANNEL.iterationDraft, (event, dirty: unknown, locale: unknown) => {
+  sender(event, 'controls')
+  if (
+    !iterationEditing ||
+    !iterationReader?.writable ||
+    typeof dirty !== 'boolean' ||
+    (locale !== 'zh' && locale !== 'en') ||
+    event.senderFrame?.url !== pdfeTargetUrl(manifest, target, 'controls').href
+  )
+    throw new Error('Invalid PDFE draft signal')
+  iterationDraft = dirty ? locale : undefined
 })
 ipcMain.handle(PDFE_CHANNEL.hide, (event) => {
   sender(event, 'controls')
@@ -283,7 +610,10 @@ async function start(): Promise<void> {
     const host = role === 'controls' && dock === 'docked' ? windows.get('product')! : window
     host.contentView.addChildView(view)
     window.on('resize', layout)
-    installContentSecurityPolicy(view, mainWindowContentSecurityPolicy(''))
+    installContentSecurityPolicy(
+      view,
+      mainWindowContentSecurityPolicy('', { frames: role === 'product' })
+    )
     const session = view.webContents.session
     await session.setProxy({ mode: 'direct' })
     session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
@@ -298,6 +628,11 @@ async function start(): Promise<void> {
       callback({ cancel: !allowed && !['data:', 'blob:', 'about:'].includes(url.protocol) })
     })
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    if (role === 'product') {
+      view.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+        if (isMainFrame && !isSameDocument) clearScreenshot()
+      })
+    }
     view.webContents.on('will-navigate', (event, url) => {
       if (!allowedUrl(url, role)) event.preventDefault()
     })
@@ -313,7 +648,8 @@ async function start(): Promise<void> {
       )
         return
       event.preventDefault()
-      showControls()
+      if (controlsVisible) hideControls()
+      else showControls()
     })
     window.on('enter-full-screen', () => view.webContents.send(WINDOW_FULLSCREEN_CHANNEL, true))
     window.on('leave-full-screen', () => view.webContents.send(WINDOW_FULLSCREEN_CHANNEL, false))
@@ -324,7 +660,12 @@ async function start(): Promise<void> {
           hideControls()
         }
       })
-    else window.on('closed', () => app.quit())
+    else {
+      window.on('close', (event) => {
+        if (!quitting && !confirmIterationDiscard()) event.preventDefault()
+      })
+      window.on('closed', () => app.quit())
+    }
   }
   await loadTarget(target)
   layout()
@@ -349,11 +690,23 @@ async function start(): Promise<void> {
   )
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (!confirmIterationDiscard()) {
+    event.preventDefault()
+    return
+  }
   quitting = true
+  try {
+    iterationReader?.close()
+  } catch {
+    console.warn('[pdfe] iteration reader release failed')
+  }
   for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()
 })
 app.on('window-all-closed', () => app.quit())
+app.on('will-quit', () => {
+  if (restartRequested) app.exit(PDFE_RESTART_EXIT)
+})
 void start().catch((error) => {
   console.error('[pdfe] startup failed', error)
   app.exit(1)

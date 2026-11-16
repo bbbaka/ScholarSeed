@@ -2,6 +2,7 @@ import type { BrowserBridge } from '../../../browser.ts'
 import { BROWSER_ERROR } from '../../../browser.ts'
 
 interface WebPageOptions {
+  navigationView?: 'resource' | 'literature' | 'discovery'
   preserveProject: true
   browserPageId: string | undefined
   browserPageOwned: true
@@ -17,6 +18,7 @@ export async function openWebPage(
   url: string,
   actions: {
     available: boolean
+    navigationView?: WebPageOptions['navigationView']
     dispatch: BrowserBridge['dispatch']
     reveal: (options: WebPageOptions) => void
   }
@@ -27,6 +29,7 @@ export async function openWebPage(
   const reply = await actions.dispatch({ kind: 'open', input: url })
   if (!reply.ok) throw new Error(reply.error)
   actions.reveal({
+    ...(actions.navigationView ? { navigationView: actions.navigationView } : {}),
     preserveProject: true,
     browserPageId: reply.snapshot.activeTabId ?? undefined,
     browserPageOwned: true,

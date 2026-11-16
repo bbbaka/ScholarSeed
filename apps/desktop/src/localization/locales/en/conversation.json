@@ -1,4 +1,13 @@
 {
+  "revision": {
+    "edit": "Edit",
+    "input": "Message content",
+    "attach": "Add files",
+    "cancel": "Cancel",
+    "submit": "Send and create task branch",
+    "submitting": "Creating branch…",
+    "failed": "Could not create a branch. Your edits are preserved. Please try again."
+  },
   "validation": {
     "required": "This field is required",
     "choice": "At least one option is required",

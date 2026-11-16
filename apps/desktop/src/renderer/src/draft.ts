@@ -89,6 +89,15 @@ export function serializeComposerDrafts(drafts: ReadonlyMap<string, Conversation
 
 export type ComposerDraftUpdate = string | ((current: string) => string)
 
+export interface ComposerTemplate {
+  prefix: string
+  suffix: string
+  label: string
+  placeholder: string
+  value: string
+  generation: number
+}
+
 export interface ComposerDraftStore {
   getSnapshot: () => string
   getRevision: () => number
@@ -96,19 +105,28 @@ export interface ComposerDraftStore {
   reset: (value?: string) => void
   set: (update: ComposerDraftUpdate) => void
   subscribe: (listener: () => void) => () => void
+  getTemplate: () => ComposerTemplate | null
+  setTemplate: (template: Omit<ComposerTemplate, 'value' | 'generation'>) => void
+  fillTemplate: (value: string) => void
+  finishTemplate: () => void
 }
 
 export function createComposerDraftStore(initialValue = ''): ComposerDraftStore {
   let value = initialValue
   let revision = 0
   let scope = 0
+  let template: ComposerTemplate | null = null
   const listeners = new Set<() => void>()
+  const notify = (): void => {
+    revision += 1
+    for (const listener of listeners) listener()
+  }
   const set = (update: ComposerDraftUpdate): void => {
     const next = typeof update === 'function' ? update(value) : update
     if (next === value) return
     value = next
-    revision += 1
-    for (const listener of listeners) listener()
+    template = null
+    notify()
   }
 
   return {
@@ -117,7 +135,28 @@ export function createComposerDraftStore(initialValue = ''): ComposerDraftStore 
     getScope: () => scope,
     reset: (next = '') => {
       scope += 1
-      set(next)
+      if (template || value !== next) {
+        template = null
+        value = next
+        notify()
+      }
+    },
+    getTemplate: () => template,
+    setTemplate: (next) => {
+      template = { ...next, value: '', generation: revision + 1 }
+      value = next.prefix + next.suffix
+      notify()
+    },
+    fillTemplate: (next) => {
+      if (!template || template.value === next) return
+      template = { ...template, value: next }
+      value = template.prefix + next + template.suffix
+      notify()
+    },
+    finishTemplate: () => {
+      if (!template?.value.trim()) return
+      template = null
+      notify()
     },
     set,
     subscribe: (listener) => {

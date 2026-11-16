@@ -19,11 +19,8 @@ import {
   Database,
   Folder,
   LogIn,
-  Paperclip,
   Plus,
   MessageCircle,
-  Hammer,
-  Upload,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -105,8 +102,14 @@ import { modelDefaultEffort, reasoningPreference } from '../../reasoning'
 
 import { ReferencePicker } from './References'
 import { SkillAdd } from './Skills'
+import {
+  SkillSelection,
+  ComposerMenuEntries,
+  selectFirstMenuItem,
+  COMPOSER_SELECTION_PAGE_SIZE,
+} from './Selection'
 import { StatusStrip } from './StatusStrip'
-import { skillCallable, skillCategory, skillDescription, skillName } from '../../skill'
+import { skillCallable, skillName } from '../../skill'
 import { SKILL_SURFACE_CONVERSATION, SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { useAccountAccess } from './access'
 import {
@@ -118,7 +121,6 @@ import {
   composerObscured,
   composerTrigger,
   turnAdmissionFeedback,
-  isAbsoluteInputPath,
   isComposerSubmissionAccepted,
   isComposerSubmissionRejectedBeforeEnqueue,
   queuedContextSummary,
@@ -224,7 +226,6 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-  SearchBox,
   Spinner,
   Tooltip,
   cx,
@@ -322,18 +323,9 @@ const queuedAlertClass =
 const referenceTrayClass = 'mt-[5px] overflow-visible'
 const referenceTrayScrollerClass =
   'flex w-max min-w-full flex-nowrap items-center gap-[var(--vds-composer-attachment-gap)] py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[var(--vds-space-1)]'
-const PLUS_MENU_PAGE_SIZE = 10
+const PLUS_MENU_PAGE_SIZE = COMPOSER_SELECTION_PAGE_SIZE
 const contextPaneClass =
   'max-h-[var(--vds-composer-reference-picker-max-height)] min-h-0 w-[268px] flex-none overflow-hidden bg-[var(--bg-2)]'
-const skillPanelClass = [
-  'flex max-h-[min(420px,70vh)] w-[268px] min-w-0 flex-col overflow-hidden bg-[var(--vds-surface-raised)] p-0',
-].join(' ')
-const skillPanelHeadClass = [
-  'grid flex-none gap-[var(--vds-space-2)] border-b border-[var(--border-soft)]',
-  'bg-[var(--bg-2)] px-[var(--vds-space-2)] pb-[var(--vds-space-3)] pt-[var(--vds-space-2)]',
-].join(' ')
-const skillMenuRowClass =
-  'w-full rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[calc(var(--vds-space-2)+var(--vds-border-width-1))] text-left text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] font-[var(--vds-fw-regular)] hover:bg-[var(--vds-bg-white-hover-transparent)] focus:bg-[var(--vds-bg-white-hover-transparent)]'
 const composerTextareaClass = (
   home: boolean,
   surface: SessionSurface,
@@ -698,7 +690,6 @@ export function Composer({
   const { t, i18n } = useTranslation('components')
   const language = i18n.resolvedLanguage || i18n.language
   const { t: assistantText } = useTranslation('assistant')
-  const { t: skillText } = useTranslation('skills')
   const collaborationModeLabel =
     COLLABORATION_MODE_OPTIONS.map((option) => ({
       value: option.value,
@@ -1050,7 +1041,6 @@ export function Composer({
       application === 'interrupt_continue'
         ? {
             clientUserMessageId: crypto.randomUUID(),
-            locale: language,
             ...(state.aiPanel.sessionId === sidNow && state.aiPanel.contextState === 'ready'
               ? { assistantContextRevision: state.aiPanel.revision }
               : {}),
@@ -2964,234 +2954,45 @@ export function Composer({
     [composerSubmission, thread.sessionId, nextTurnDisabled]
   )
 
-  const selectFirstMenuItem = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== 'Enter' || !(event.target instanceof HTMLInputElement)) return
-    const first = event.currentTarget.querySelector<HTMLButtonElement>(
-      '[role="menuitem"]:not(:disabled)'
-    )
-    if (!first) return
-    event.preventDefault()
-    event.stopPropagation()
-    first.click()
-  }
   const skillMenuContent = (
-    <div
-      ref={skillPanelRef}
-      className={skillPanelClass}
-      onKeyDown={(event) => {
-        if (
-          event.target instanceof Element &&
-          Boolean(event.target.closest('[data-composer-skill-option]')) &&
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.altKey &&
-          ((event.key.length === 1 && event.key !== ' ') || event.key === 'Backspace')
-        ) {
-          event.preventDefault()
-          event.stopPropagation()
-          setSkillQuery((current) =>
-            event.key === 'Backspace' ? current.slice(0, -1) : current + event.key
-          )
-          setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
-          skillSearchRef.current?.focus()
-          return
-        }
-        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-        if (
-          (event.key === 'Home' || event.key === 'End') &&
-          event.target instanceof HTMLInputElement
+    <SkillSelection
+      panelRef={skillPanelRef}
+      searchRef={skillSearchRef}
+      query={skillQuery}
+      onQueryChange={setSkillQuery}
+      visibleCount={skillVisibleCount}
+      onVisibleCountChange={setSkillVisibleCount}
+      rows={skillRows}
+      loading={skillRowsLoading}
+      onSelect={(skill) => {
+        setPendingRefs((prev) =>
+          prev.some((r) => r.type === 'skill' && r.id === skill.name)
+            ? prev
+            : [
+                ...prev,
+                {
+                  type: 'skill',
+                  id: skill.name,
+                  title: skillName(skill, i18n.resolvedLanguage || i18n.language),
+                  path: skill.path,
+                  version: skill.version,
+                },
+              ]
         )
-          return
-        const rows = [
-          ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
-            '[data-composer-skill-option]'
-          ),
-        ]
-        if (!rows.length) return
-        event.preventDefault()
-        event.stopPropagation()
-        const current = rows.indexOf(document.activeElement as HTMLButtonElement)
-        const index =
-          event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? rows.length - 1
-              : event.key === 'ArrowDown'
-                ? (current + 1) % rows.length
-                : (current - 1 + rows.length) % rows.length
-        rows[index].focus()
-        rows[index].scrollIntoView({ block: 'nearest' })
+        clearAtTrigger()
+        setSkillPanelOpen(false)
+        setPlusMenuOpen(false)
+        setSkillQuery('')
+        restoreComposerFocus()
       }}
-    >
-      <div className={skillPanelHeadClass}>
-        <div className="relative">
-          <SearchBox
-            ref={skillSearchRef}
-            value={skillQuery}
-            onChange={(event) => {
-              setSkillQuery(event.target.value)
-              setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
-            }}
-            placeholder={t('composer.searchSkills')}
-            aria-label={t('composer.searchSkillsLabel')}
-            size="sm"
-          />
-          {skillQuery && (
-            <IconButton
-              className="absolute right-[var(--vds-space-1)] top-1/2 -translate-y-1/2"
-              icon={<X size={13} />}
-              label={t('composer.clearSearch')}
-              onClick={() => {
-                setSkillQuery('')
-                setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
-              }}
-              size="xs"
-              variant="ghost"
-            />
-          )}
-        </div>
-      </div>
-      <div className="min-h-0 overflow-y-auto overscroll-contain" data-testid="composer-skill-list">
-        {skillRowsLoading || skillRows === null ? (
-          <p className="m-[var(--vds-space-0)] px-[var(--vds-space-3)] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
-            {t('composer.loadSkills')}
-          </p>
-        ) : (
-          (() => {
-            const q = skillQuery.trim().toLowerCase()
-            const language = i18n.resolvedLanguage || i18n.language
-            const rows = skillRows
-              .filter(
-                (s): s is SkillInfo & { path: string } =>
-                  s.enabled !== false &&
-                  s.active !== false &&
-                  (!s.dependency_status || s.dependency_status === 'ready') &&
-                  isAbsoluteInputPath(s.path)
-              )
-              .filter(
-                (s) =>
-                  !q ||
-                  s.name.toLowerCase().includes(q) ||
-                  skillName(s, language).toLowerCase().includes(q) ||
-                  skillDescription(s, language).toLowerCase().includes(q)
-              )
-            if (!rows.length) {
-              return (
-                <EmptyState
-                  variant="compact"
-                  icon={<Icon name="search" />}
-                  title={t('composer.emptySkills')}
-                />
-              )
-            }
-            const visibleRows = rows.slice(0, skillVisibleCount)
-            return [
-              ...visibleRows.map((s) => {
-                const description = skillDescription(s, language)
-                return (
-                  <Tooltip
-                    key={s.name}
-                    className="!w-full"
-                    content={description}
-                    disabled={!description}
-                    portalled
-                    side="right"
-                  >
-                    <span className="block w-full">
-                      <Button
-                        type="button"
-                        data-testid={`composer-skill-${s.name}`}
-                        data-composer-skill-option
-                        role="menuitem"
-                        variant="ghost"
-                        size="content"
-                        unstyled
-                        className={`block ${skillMenuRowClass}`}
-                        onClick={() => {
-                          setPendingRefs((prev) =>
-                            prev.some((r) => r.type === 'skill' && r.id === s.name)
-                              ? prev
-                              : [
-                                  ...prev,
-                                  {
-                                    type: 'skill',
-                                    id: s.name,
-                                    title: skillName(s, language),
-                                    path: s.path,
-                                    version: s.version,
-                                  },
-                                ]
-                          )
-                          clearAtTrigger()
-                          setSkillPanelOpen(false)
-                          setPlusMenuOpen(false)
-                          setSkillQuery('')
-                          restoreComposerFocus()
-                        }}
-                      >
-                        <span className="flex min-w-0 items-center justify-between gap-[var(--vds-space-2)]">
-                          <span className="min-w-0 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-primary)]">
-                            {skillName(s, language)}
-                          </span>
-                          {s.category ? (
-                            <span className="flex-none whitespace-nowrap rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[var(--vds-space-2)] py-[var(--vds-space-half)] text-[length:var(--vds-font-caption)] text-[var(--text-3)]">
-                              {skillCategory(s, skillText)}
-                            </span>
-                          ) : null}
-                        </span>
-                      </Button>
-                    </span>
-                  </Tooltip>
-                )
-              }),
-              rows.length > visibleRows.length ? (
-                <Button
-                  type="button"
-                  key="composer-skill-more"
-                  data-testid="composer-skill-more"
-                  variant="ghost"
-                  size="content"
-                  unstyled
-                  className="flex w-full items-center justify-center border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)] hover:bg-[var(--vds-bg-white-hover-transparent)] hover:text-[var(--text)]"
-                  onClick={() => setSkillVisibleCount((count) => count + PLUS_MENU_PAGE_SIZE)}
-                >
-                  {t('composer.viewMore')} ({rows.length - visibleRows.length})
-                </Button>
-              ) : null,
-            ]
-          })()
-        )}
-      </div>
-      <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--bg-2)] p-[calc(var(--vds-space-1)+var(--vds-border-width-1))] [&_button]:!font-[var(--vds-fw-regular)]">
-        <Button
-          data-testid="composer-skill-upload"
-          variant="ghost"
-          size="content"
-          unstyled
-          className={`flex items-center justify-start gap-[var(--vds-space-2)] ${skillMenuRowClass}`}
-          icon={<Upload aria-hidden className="size-[var(--vds-icon-7)]" />}
-          onClick={() => {
-            clearAtTrigger()
-            setSkillPanelOpen(false)
-            setPlusMenuOpen(false)
-            set({ skillUploadOpen: true })
-          }}
-        >
-          {t('composer.uploadSkill')}
-        </Button>
-        <Button
-          data-testid="composer-skill-market"
-          variant="ghost"
-          size="content"
-          unstyled
-          className={`flex items-center justify-start gap-[var(--vds-space-2)] ${skillMenuRowClass}`}
-          icon={<Hammer aria-hidden className="size-[var(--vds-icon-7)]" />}
-          onClick={openSkillCenter}
-        >
-          {t('composer.skillMarket')}
-        </Button>
-      </div>
-    </div>
+      onUpload={() => {
+        clearAtTrigger()
+        setSkillPanelOpen(false)
+        setPlusMenuOpen(false)
+        set({ skillUploadOpen: true })
+      }}
+      onExplore={openSkillCenter}
+    />
   )
   return (
     <>
@@ -3476,6 +3277,7 @@ export function Composer({
                   spellCheck={false}
                   unstyled
                   onChange={handleComposerChange}
+                  onTemplateSubmit={() => void submit()}
                   onSelect={syncComposerSelection}
                   onKeyDown={handleComposerKeyDown}
                   onPaste={editing ? undefined : handleComposerPaste}
@@ -3581,61 +3383,31 @@ export function Composer({
                     {menuEntry === 'skills' ? (
                       skillMenuContent
                     ) : (
-                      <>
-                        <DropdownMenuSub
-                          open={skillPanelOpen}
-                          onOpenChange={(open) => {
-                            if (open) openSkillSubmenu()
-                            else setSkillPanelOpen(false)
-                          }}
-                        >
-                          <DropdownMenuSubTrigger data-testid="composer-skills-menu" openOnHover>
-                            <Hammer size={15} />
-                            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                              {t('composer.skill')}
-                            </span>
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent
-                            coordinateNavigation
-                            data-testid="composer-plus-submenu"
-                            onKeyDown={selectFirstMenuItem}
-                          >
-                            {skillMenuContent}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        <DropdownMenuItem
-                          data-testid="composer-add-file"
-                          onFocus={closePlusSubmenus}
-                          onSelect={() => {
-                            clearAtTrigger()
-                            act.closeAiContextPicker()
-                            void pickLocalSources(
-                              unifiedLocalPicker
-                                ? IMPORT_PICKER_TARGET.RESOURCE
-                                : IMPORT_PICKER_TARGET.FILE
-                            )
-                          }}
-                        >
-                          <Paperclip size={15} />
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                            {t('composer.addLocal')}
-                          </span>
-                        </DropdownMenuItem>
-                        {!unifiedLocalPicker &&
-                          typeof window.scholarseed?.pickImport === 'function' && (
-                            <DropdownMenuItem
-                              data-testid="composer-add-folder"
-                              onFocus={closePlusSubmenus}
-                              onSelect={() => {
+                      <ComposerMenuEntries
+                        skillsOpen={skillPanelOpen}
+                        onSkillsOpenChange={(open) => {
+                          if (open) openSkillSubmenu()
+                          else setSkillPanelOpen(false)
+                        }}
+                        skills={skillMenuContent}
+                        onFile={() => {
+                          clearAtTrigger()
+                          act.closeAiContextPicker()
+                          void pickLocalSources(
+                            unifiedLocalPicker
+                              ? IMPORT_PICKER_TARGET.RESOURCE
+                              : IMPORT_PICKER_TARGET.FILE
+                          )
+                        }}
+                        onFolder={
+                          !unifiedLocalPicker &&
+                          typeof window.scholarseed?.pickImport === 'function'
+                            ? () => {
                                 void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
-                              }}
-                            >
-                              <Folder size={15} />
-                              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                                {t('composer.addLocalFolder')}
-                              </span>
-                            </DropdownMenuItem>
-                          )}
+                              }
+                            : undefined
+                        }
+                      >
                         {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
                         本轮 typed attachment，两种语义不能合并成一套假状态。 */}
                         {availableContextSources.map((source) => {
@@ -3714,7 +3486,7 @@ export function Composer({
                             </DropdownMenuSub>
                           )
                         })}
-                      </>
+                      </ComposerMenuEntries>
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>

@@ -87,7 +87,11 @@ const WORKBENCH_VIEWS: MainView[] = [
   'projects',
   'resource',
   'literature',
+  'discovery',
   'writing',
+  ...featureRegistry.panels
+    .filter((panel) => panel.slot === 'project-page')
+    .map((panel) => panel.key as MainView),
 ]
 
 /** 等 Composer 注册提交入口的轮询间隔与上限。 */
@@ -1423,6 +1427,7 @@ function ConfirmDialog(): React.JSX.Element {
     if (r.ok) {
       documentWorkspaces.discardTaskDocuments(cd.sessionId)
       act.removeSession(cd.sessionId, cd.surface) // 从本地树/线程剔除 + 关对话框
+      if (state.activeSession === cd.sessionId && !state.archivedSession) cd.onRemoved?.()
       window.dispatchEvent(new Event('scholarseed:refresh-session-list'))
       return
     }
@@ -1442,12 +1447,14 @@ function ConfirmDialog(): React.JSX.Element {
           <AlertDialogHeader>
             <AlertDialogTitle>{t('delete.title')}</AlertDialogTitle>
             <AlertDialogDescription>
-              <Trans
-                t={t}
-                ns="shell"
-                i18nKey="delete.irreversible"
-                components={{ name: <b>{title}</b> }}
-              />
+              {cd.description ?? (
+                <Trans
+                  t={t}
+                  ns="shell"
+                  i18nKey="delete.irreversible"
+                  components={{ name: <b>{title}</b> }}
+                />
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {children.count !== null && children.count > 0 && (

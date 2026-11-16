@@ -9,6 +9,10 @@ import {
   LogOut,
   MessageCircleQuestionMark,
   Settings,
+  Sun,
+  Moon,
+  Monitor,
+  Check,
 } from 'lucide-react'
 import type { AccountMenuAction, AccountMenuView, MenuItem, MenuValue } from '../../../../menu'
 import { MENU_ACTION } from '../../../../menu'
@@ -47,7 +51,7 @@ export function AccountMenuPanel({
   view: AccountMenuView
   onAction(action: AccountMenuAction, value: MenuValue): void
 }): React.JSX.Element {
-  const [languageOpen, setLanguageOpen] = useState(false)
+  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null)
   const languageTrigger = useRef<HTMLButtonElement | null>(null)
   const translate = accountMenuText(view.locale)
   const credits = view.credits
@@ -65,28 +69,40 @@ export function AccountMenuPanel({
     <>
       {accountMenuItems(view).map((item) => {
         if (item.kind === 'separator') return <DropdownMenuSeparator key={item.id} />
-        if (item.kind === 'submenu')
+        if (item.kind === 'submenu') {
+          const appearance = item.id === MENU_ACTION.appearance
+          const selected = item.items.find(
+            (option): option is Extract<MenuItem, { kind: 'action' }> =>
+              option.kind === 'action' && option.checked
+          )
+          const AppearanceIcon =
+            view.theme === 'dark' ? Moon : view.theme === 'system' ? Monitor : Sun
           return (
-            <DropdownMenuSub key={item.id} open={languageOpen} onOpenChange={setLanguageOpen}>
+            <DropdownMenuSub
+              key={item.id}
+              open={openSubmenu === item.id}
+              onOpenChange={(open) =>
+                setOpenSubmenu((current) => (open ? item.id : current === item.id ? null : current))
+              }
+            >
               <DropdownMenuSubTrigger
-                data-testid="account-menu-language"
-                className="min-w-0 [&>svg:last-child]:hidden"
+                data-testid={appearance ? 'account-menu-appearance' : 'account-menu-language'}
+                className="h-auto! min-w-0 py-[var(--vds-space-2)]!"
                 disabled={view.logoutBusy}
                 onFocus={(event) => {
                   languageTrigger.current = event.currentTarget
                 }}
               >
-                <Globe size={ACCOUNT_ICON_SIZE} />
+                {appearance ? (
+                  <AppearanceIcon size={ACCOUNT_ICON_SIZE} />
+                ) : (
+                  <Globe size={ACCOUNT_ICON_SIZE} />
+                )}
                 <span className="min-w-0 flex-1 text-left">
-                  {translate('preferences.language')}
-                </span>
-                <span className="flex-none text-[var(--vds-text-tertiary)]">
-                  {
-                    item.items.find(
-                      (option): option is Extract<MenuItem, { kind: 'action' }> =>
-                        option.kind === 'action' && option.checked
-                    )?.label
-                  }
+                  <span className="block">
+                    {translate(appearance ? 'preferences.appearance' : 'preferences.language')}
+                  </span>
+                  <span className="block text-[var(--vds-text-tertiary)]">{selected?.label}</span>
                 </span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
@@ -94,7 +110,7 @@ export function AccountMenuPanel({
                 onKeyDown={(event) => {
                   if (event.key !== 'ArrowLeft') return
                   event.preventDefault()
-                  setLanguageOpen(false)
+                  setOpenSubmenu(null)
                   languageTrigger.current?.focus({ preventScroll: true })
                 }}
               >
@@ -110,13 +126,21 @@ export function AccountMenuPanel({
                         onClick={(event) => {
                           event.preventDefault()
                           if (option.disabled) return
-                          onAction(MENU_ACTION.language, option.value)
-                          setLanguageOpen(false)
+                          onAction(option.actionId as AccountMenuAction, option.value)
+                          setOpenSubmenu(null)
                           languageTrigger.current?.focus({ preventScroll: true })
                         }}
                       >
-                        {option.value.kind === 'choice' &&
-                        option.value.value === SYSTEM_LANGUAGE_MODE ? (
+                        {appearance ? (
+                          option.value.kind === 'choice' && option.value.value === 'dark' ? (
+                            <Moon size={ACCOUNT_ICON_SIZE} />
+                          ) : option.value.kind === 'choice' && option.value.value === 'system' ? (
+                            <Monitor size={ACCOUNT_ICON_SIZE} />
+                          ) : (
+                            <Sun size={ACCOUNT_ICON_SIZE} />
+                          )
+                        ) : option.value.kind === 'choice' &&
+                          option.value.value === SYSTEM_LANGUAGE_MODE ? (
                           <Globe className="size-[var(--vds-icon-8)] shrink-0 text-[var(--vds-text-tertiary)]" />
                         ) : (
                           <IconFont
@@ -129,12 +153,19 @@ export function AccountMenuPanel({
                           />
                         )}
                         {option.label}
+                        {appearance && option.checked && (
+                          <Check
+                            size={ACCOUNT_ICON_SIZE}
+                            className="ml-auto text-[var(--vds-brand-text-primary)]"
+                          />
+                        )}
                       </DropdownMenuItem>
                     )
                 )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           )
+        }
         const IconComponent = ACCOUNT_ICONS[item.actionId as keyof typeof ACCOUNT_ICONS]
         return (
           <DropdownMenuItem

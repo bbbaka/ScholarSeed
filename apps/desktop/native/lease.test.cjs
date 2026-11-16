@@ -2289,6 +2289,69 @@ test('project role accepts shared data while private pins and coordination remai
   } finally { lease.close() }
 })
 
+test('project bound reads allow mixed-case safe leaves without changing private or mutation grammar', (t) => {
+  const root = directory(t)
+  const filename = 'PDFE-iterations.json'
+  const bytes = Buffer.from('iteration evidence')
+  fs.writeFileSync(path.join(root, filename), bytes)
+  const project = api.pin(root, false, 'project')
+  const privatePin = api.pin(root, false)
+  try {
+    assert.deepEqual(api.readAt(project, filename, 1024), bytes)
+    assert.throws(() => api.readAt(privatePin, filename, 1024), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.createAt(project, 'Other.JSON', bytes), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.readAt(project, '../Other.JSON', 1024), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.readAt(project, 'Other.JSON:stream', 1024), { code: 'ERR_LEASE_ARGUMENT' })
+  } finally {
+    api.release(privatePin)
+    api.release(project)
+  }
+})
+
+test('project replacement compares bytes and never follows swapped directories or leaf links', { skip: process.platform !== 'darwin' }, (t) => {
+  const root = directory(t)
+  const worktree = path.join(root, 'worktree')
+  const outside = path.join(root, 'outside')
+  const moved = path.join(root, 'moved')
+  const leaf = 'PDFE-iterations.json'
+  const original = Buffer.from('original')
+  const next = Buffer.from('next')
+  const external = Buffer.from('external')
+  fs.mkdirSync(worktree)
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(worktree, leaf), original, { mode: 0o644 })
+  fs.writeFileSync(path.join(outside, leaf), external)
+  const pin = api.pin(worktree, false, 'project')
+  const privatePin = api.pin(worktree, false)
+  try {
+    assert.throws(() => api.replaceProjectAt(privatePin, leaf, original, next), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.replaceProjectAt(pin, '../outside/' + leaf, original, next), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.replaceProjectAt(pin, leaf, external, next), { code: 'ERR_LEASE_CHANGED' })
+    assert.deepEqual(fs.readFileSync(path.join(worktree, leaf)), original)
+    api.replaceProjectAt(pin, leaf, original, next)
+    assert.deepEqual(fs.readFileSync(path.join(worktree, leaf)), next)
+    assert.deepEqual(fs.readdirSync(worktree), [leaf])
+    fs.chmodSync(path.join(worktree, leaf), 0o444)
+    assert.throws(() => api.replaceProjectAt(pin, leaf, next, original))
+    assert.deepEqual(fs.readFileSync(path.join(worktree, leaf)), next)
+    fs.chmodSync(path.join(worktree, leaf), 0o644)
+    fs.unlinkSync(path.join(worktree, leaf))
+    fs.symlinkSync(path.join(outside, leaf), path.join(worktree, leaf))
+    assert.throws(() => api.replaceProjectAt(pin, leaf, external, next))
+    assert.equal(fs.lstatSync(path.join(worktree, leaf)).isSymbolicLink(), true)
+    fs.unlinkSync(path.join(worktree, leaf))
+    fs.writeFileSync(path.join(worktree, leaf), original)
+    fs.renameSync(worktree, moved)
+    fs.symlinkSync(outside, worktree)
+    assert.throws(() => api.replaceProjectAt(pin, leaf, original, next))
+    assert.deepEqual(fs.readFileSync(path.join(moved, leaf)), original)
+    assert.deepEqual(fs.readFileSync(path.join(outside, leaf)), external)
+  } finally {
+    api.release(privatePin)
+    api.release(pin)
+  }
+})
+
 
 test('project role preserves OS read denial and reparse rejection', (t) => {
   const root = directory(t)

@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown } from 'lucide-react'
+import { BookmarkCheck, Check, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { LiteratureSearchPaper } from '../../contracts/literature'
 import {
   Button,
+  IconButton,
+  Tooltip,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -51,6 +53,10 @@ export function Joining({
   className,
   size = 'sm',
   variant = 'secondary',
+  label,
+  icon,
+  showChevron = true,
+  iconOnly = false,
 }: {
   ports: JoinPorts
   papers: LiteratureSearchPaper[]
@@ -59,6 +65,10 @@ export function Joining({
   className?: string
   size?: ButtonSize
   variant?: ButtonVariant
+  label?: string
+  icon?: React.ReactNode
+  showChevron?: boolean
+  iconOnly?: boolean
 }): React.JSX.Element {
   const projectId = ports.projectId
   const { t } = useTranslation('literature')
@@ -179,7 +189,22 @@ export function Joining({
   }
   const selectedReceipt =
     papers.length === 1 ? receipts.get(paperJoinKey(papers[0], projectId)) : undefined
-  if (selectedReceipt && !selection) return <JoinedLabel />
+  if (selectedReceipt && !selection)
+    return iconOnly ? (
+      <Tooltip content={t('join.added')} portalled side="top">
+        <IconButton
+          label={t('join.added')}
+          title={undefined}
+          icon={<BookmarkCheck />}
+          className="!text-[var(--vds-brand-text-primary)] !bg-[var(--vds-brand-light-bg-default)]"
+          variant="ghost"
+          size="sm"
+          aria-disabled="true"
+        />
+      </Tooltip>
+    ) : (
+      <JoinedLabel />
+    )
   return (
     <>
       <DropdownMenu
@@ -193,21 +218,39 @@ export function Joining({
           setOpen(value)
         }}
       >
-        <DropdownMenuTrigger asChild>
-          <Button
-            className={className}
-            variant={variant}
-            size={size}
-            loading={busy}
-            disabled={!papers.length || busy}
-            onClick={(event) => event.stopPropagation()}
-            data-testid="join-library-trigger"
-          >
-            {t('join.button')}
-            {selection ? ` (${selection.count}/${selection.total})` : null}
-            <ChevronDown size="1em" aria-hidden="true" />
-          </Button>
-        </DropdownMenuTrigger>
+        {iconOnly ? (
+          <Tooltip content={label ?? t('join.button')} portalled side="top">
+            <DropdownMenuTrigger asChild>
+              <IconButton
+                label={label ?? t('join.button')}
+                title={undefined}
+                icon={icon}
+                variant="ghost"
+                size="sm"
+                loading={busy}
+                disabled={!papers.length || busy}
+                onClick={(event) => event.stopPropagation()}
+                data-testid="join-library-trigger"
+              />
+            </DropdownMenuTrigger>
+          </Tooltip>
+        ) : (
+          <DropdownMenuTrigger asChild>
+            <Button
+              className={className}
+              variant={variant}
+              size={size}
+              icon={icon}
+              loading={busy}
+              disabled={!papers.length || busy}
+              onClick={(event) => event.stopPropagation()}
+              data-testid="join-library-trigger"
+            >
+              {label ?? t('join.button')}
+              {showChevron && <ChevronDown size="1em" aria-hidden="true" />}
+            </Button>
+          </DropdownMenuTrigger>
+        )}
         <DropdownMenuContent
           className={MENU_BOUNDS}
           onClick={(event) => event.stopPropagation()}

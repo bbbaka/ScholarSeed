@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { LiteratureAttachmentSummary, LiteratureCounts, LiteratureDetail, LiteratureFacet, LiteratureFacets, LiteratureNote, LiteraturePage, LiteratureProjects, LiteratureQuery, LiteratureSummary, LiteratureTagFacet, LiteratureTagFacets } from '../src/renderer/src/contracts/literature.ts'
+import type { LiteratureAttachmentSummary, LiteratureCounts, LiteratureDetail, LiteratureFacet, LiteratureFacets, LiteratureNote, LiteraturePage, LiteratureProjects, LiteratureQuery, LiteratureSearchPaper, LiteratureSummary, LiteratureTagFacet, LiteratureTagFacets } from '../src/renderer/src/contracts/literature.ts'
 
 export const PREVIEW_LITERATURE = {
   delayMs: 2_000,
@@ -39,6 +39,7 @@ export interface PreviewLiteratureOptions {
   projects: () => readonly { id: string; name: string; archived_at?: number | null }[]
   pdf?: { path: string; name: string; size: number; revision: string; identity: string }
   policy?: PreviewLiteraturePolicy
+  savedPapers?: readonly LiteratureSearchPaper[]
 }
 export interface PreviewLiteratureAttachment {
   path: string
@@ -111,6 +112,7 @@ export function parsePreviewLiteratureQuery(params: URLSearchParams): Literature
 export class PreviewLiterature {
   private readonly policy: Readonly<PreviewLiteraturePolicy>
   private readonly items = new Map<string, Entry>()
+  private readonly curatedIds = new Map<string, Set<string>>()
   private readonly collectionRows: LiteratureFacet[] = []
   private readonly tagRows: LiteratureFacet[] = []
   private readonly pdf: PreviewLiteratureOptions['pdf']
@@ -128,6 +130,7 @@ export class PreviewLiterature {
     this.resolveProjects = options.projects
     this.currentProjectId = options.currentProjectId
     if (this.policy.seed === 'sample') this.seed()
+    for (const paper of options.savedPapers ?? []) this.admitCurated(paper, '', '')
   }
 
   private seed(): void {
@@ -331,6 +334,41 @@ export class PreviewLiterature {
       return this.detailProjection(entry, projectId)
     }, signal)
   }
+  admitCurated(paper: LiteratureSearchPaper, projectId: string, collectionId: string): LiteratureSummary {
+    this.active()
+    this.scope(projectId)
+    if (collectionId && !this.collectionRows.some(row => row.id === collectionId && (row.project_id ?? '') === projectId))
+      fail(404, PREVIEW_LITERATURE.invalid)
+    const now = new Date().toISOString()
+    const summary: LiteratureSummary = {
+      id: randomUUID(), item_type: 'article', bib_type: 'article', title: paper.title,
+      creators_display: paper.authors.join(', '), publication_display: paper.venue ?? '',
+      year: paper.year, abstract: paper.abstract ?? '', doi: paper.doi, arxiv: paper.arxiv_id,
+      url: paper.url, created_at: now, updated_at: now, published_date: null, last_read_at: null,
+      read_progress: 0, is_unread: true, primary_attachment: null, attachments: [], collections: [],
+      project_collections: [], tags: [], projects: [], version: 1,
+    }
+    this.items.set(summary.id, {
+      summary, notes: [],
+      relations: {
+        collection_ids: collectionId && !projectId ? [collectionId] : [],
+        project_collection_ids: collectionId && projectId ? [collectionId] : [],
+        project_ids: projectId ? [projectId] : [], tag_ids: [],
+      },
+    })
+    const admitted = this.curatedIds.get(paper.paper_id) ?? new Set<string>()
+    admitted.add(projectId)
+    this.curatedIds.set(paper.paper_id, admitted)
+    return summary
+  }
+  curatedStatus(ids: string[], projectId: string) {
+    this.active()
+    this.scope(projectId)
+    return { items: Object.fromEntries(ids.map(id => {
+      const projects = this.curatedIds.get(id)
+      return [id, { library: (projectId ? projects?.has(projectId) : projects?.size) ? 'matched' : 'absent' }]
+    })) }
+  }
   private touch(entry: Entry): void { entry.summary.version += 1; entry.summary.updated_at = new Date().toISOString() }
   private noteBody(value: unknown, update = false): { title: string; text: string; version?: number } {
     const body = record(value, 422)
@@ -381,6 +419,7 @@ export class PreviewLiterature {
     this.disposed = true
     for (const cancel of this.pending) cancel()
     this.items.clear()
+    this.curatedIds.clear()
     this.collectionRows.length = 0
     this.tagRows.length = 0
   }

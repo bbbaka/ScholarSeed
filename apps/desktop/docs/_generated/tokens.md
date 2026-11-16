@@ -470,6 +470,8 @@ Sources: `src/renderer/src/design/*.css` and the compatibility entry `src/render
 | `--vds-composer-hint-padding-bottom` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-composer-mode-menu-viewport-max-width` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-composer-reference-picker-max-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-composer-selection-max-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-composer-selection-width` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-composer-suggestion-list-max-height` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-connector-oauth-background` | `src/renderer/src/design/tokens.css` · `:root`<br>`src/renderer/src/design/tokens.css` · `:root[data-theme='dark']`<br>`src/renderer/src/design/tokens.css` · `:root:not([data-theme]):not(.light)` | variants (3) |
 | `--vds-control-border` | `src/renderer/src/design/theme.css` · `:root,
@@ -544,6 +546,80 @@ Sources: `src/renderer/src/design/*.css` and the compatibility entry `src/render
 :root[data-theme='light']` | single |
 | `--vds-dialog-list-max-height` | `src/renderer/src/design/theme.css` · `:root,
 :root[data-theme='light']` | single |
+| `--vds-discovery-abstract-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-abstract-size` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-ai-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-ai-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-article-basis` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-aside-basis` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-astro-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-astro-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-body` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-body-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-button-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-caption` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-card-gap` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-card-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-card-min` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-card-title` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-chem-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-chem-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-chip-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-compact-metric` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-earth-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-earth-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-eco-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-eco-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-energy-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-energy-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-flow-min` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-focus-shadow` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-grid-gap` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-bottom` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-gap` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-inset` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-title` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-hero-top` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-life-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-life-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-math-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-math-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-med-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-med-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-meta` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-metric` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-metric-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-neuro-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-neuro-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-page-bottom` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-page-x` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-page-y` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-quantum-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-quantum-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-question-min` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-quote-border` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-reader-title` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-reader-title-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-reader-top` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-reader-width` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-robot-bg` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-robot-ink` | `src/renderer/src/design/layout.css` · `:root`<br>`src/renderer/src/design/layout.css` · `:root[data-theme='dark']` | variants (2) |
+| `--vds-discovery-rule-width` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-section-title` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-section-x` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-section-y` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-small` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-small-button-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-small-line` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-soft-inset` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-stat-min` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-stat-value` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-term-min` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-tight-gap` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-title` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-discovery-width` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-divider-color` | `src/renderer/src/design/theme.css` · `:root,
 :root[data-theme='light']` | single |
 | `--vds-divider-default` | `src/renderer/src/design/tokens.css` · `:root`<br>`src/renderer/src/design/tokens.css` · `:root[data-theme='dark']`<br>`src/renderer/src/design/tokens.css` · `:root:not([data-theme]):not(.light)` | variants (3) |
@@ -1291,6 +1367,8 @@ Sources: `src/renderer/src/design/*.css` and the compatibility entry `src/render
 | `--vds-resource-tree-version-margin-left` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-retrieval-site-width` | `src/renderer/src/design/theme.css` · `:root,
 :root[data-theme='light']` | single |
+| `--vds-schedule-composer-min-height` | `src/renderer/src/design/layout.css` · `:root` | single |
+| `--vds-schedule-task-filter-width` | `src/renderer/src/design/layout.css` · `:root` | single |
 | `--vds-scroll-area-radius` | `src/renderer/src/design/theme.css` · `:root,
 :root[data-theme='light']` | single |
 | `--vds-scroll-area-shadow-size` | `src/renderer/src/design/theme.css` · `:root,

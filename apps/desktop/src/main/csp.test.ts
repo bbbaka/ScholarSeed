@@ -114,3 +114,10 @@ test('CSP without account service retains loopback connectivity', () => {
   assert.ok(directives.includes("connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*"))
   assert.ok(directives.includes("img-src 'self' http://127.0.0.1:* data: blob:"))
 })
+
+test('a controls-only document cannot embed frames or be embedded', () => {
+  const directives = mainWindowContentSecurityPolicy('', { frames: false }).split('; ')
+  assert.ok(directives.includes("frame-src 'none'"))
+  assert.ok(directives.includes("frame-ancestors 'none'"))
+  assert.ok(!directives.includes("frame-src 'self' scholarseed-plugin:"))
+})

@@ -63,13 +63,11 @@ python -m service.cli.plugins describe
 
 在界面状态更新后登记文本，书深会在“复制消息”中按顺序合并本轮正文与卡片。公共卡片由书深根据业务数据生成，无需重复登记。
 
-官方 UI 的 `Conversation.Results`、`Details`、`References`、`Downloads`、`Delivery` 和 `Review` 在 `mount()` 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。
+官方 UI 的 `Conversation.Choices`、`Results`、`Details`、`References`、`Downloads`、`Delivery` 和 `Review` 在 `mount()` 内使用时会自动登记文本。组合多个组件时会合并内容；综述的折叠章节、引用、检查和问题不会因未展开而遗漏。产物保留标题和路径，不会自动读取文件正文。
 
-`Markdown`、`Code`、`Formula` 和 `Artifact` 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。`Tabulation` 需要提供 `copyText` 或 `invalidSource`，不会从表格 DOM 推断数据。
+`Markdown`、`Message`、`Code`、`Formula` 和 `Artifact` 也会自动登记；代码保留未展开的完整源码，公式保留 LaTeX、说明和注释。`Tabulation` 需要提供 `copyText` 或 `invalidSource`，不会从表格 DOM 推断数据。
 
-用户输入、上下文、执行过程与计划、确认与澄清、下一步建议、异常与空回答使用书深原生 UI，不从官方 UI 包导出。`interaction.question` 和 `literature.authorization` 保留宿主原生入口；综述 iframe 仅展示内容，不重复提供大纲确认选项。回答与产物需要的图片、菜单及内容组件继续保留，其自身的加载、复制和渲染错误处理不受影响。
-
-`Plot` 及十种具体图表、`DataTable`、`Content` 同样自动登记。图表与数据表使用完整原始行和单位，不因折叠、筛选或分页遗漏数据，不把缺失值填成零；证据包含完整摘录与定位；产物包含已提供的预览，不自动读文件。三个统一技能组合会登记标题、内容和已保存选择，不登记提交/取消等按钮。
+`Plot` 及十种具体图表、`DataTable`、`Content`、`EvidenceSelection`、`ArtifactPreview` 同样自动登记。图表与数据表使用完整原始行和单位，不因折叠、筛选或分页遗漏数据，不把缺失值填成零；证据包含完整摘录与定位；产物包含已提供的预览，不自动读文件。三个统一技能组合会登记标题、内容和已保存选择，不登记提交/取消等按钮。
 
 这些组件的文本进入消息下方的整轮复制入口；卡片没有独立复制按钮。任意布局、图标或菜单不会自动变成业务文本。普通插件继续使用隔离桥，不调用 `navigator.clipboard`，也不获得宿主 DOM 或文件访问权。
 
@@ -149,7 +147,8 @@ mount(state => React.createElement(Notes, { state }));
 | `literature authorize` | 请求用户授权读取全文 | 展示候选论文，等待用户确认后继续。 |
 | `literature result / review` | 展示检索结果或综述流程卡片 | 按检查点展示结果、收集选择或确认大纲。 |
 | `literature acquire` | 获取获准候选的开放全文 | 下载并托管文件；逐篇返回获取结果。 |
-| `literature import` | 将会话文件导入文献库 | 按用户明确指令写入文献库并关联当前项目。 |
+| `literature ingest / import` | 将下载结果或会话文件导入文献库 | 写文献库并关联当前项目；`import` 按用户明确指令直接导入。 |
+| `literature delivery` | 展示全文保存流程 | 固定本次交付批次，按用户后续选择保存或入库。 |
 | `literature collection.list / tag.list` | 列出分类或标签 | 分类属于当前项目，标签全局共享。 |
 | `literature collection.create / collection.update` | 创建、重命名或移动分类 | 修改当前项目的分类结构。 |
 | `literature tag.create / tag.update` | 创建或重命名标签 | 修改全局标签，重命名影响所有使用它的项目。 |
@@ -169,7 +168,7 @@ mount(state => React.createElement(Notes, { state }));
 
 在与目标书深版本匹配的源码版本查阅：
 
-- [描述符与 schema](../../apps/serve/service/capabilities/service/descriptor.py)、[离线工具](../../apps/serve/service/cli/plugins.py)
+- [描述符与 schema](../../apps/serve/service/capabilities/service/descriptor.py)、[离线工具](../../apps/serve/service/capabilities/README.md)
 - [官方 UI 导出](../../packages/ui/manifest.json)、[组件目录](../../packages/ui/catalog.ts)
 - [SDK 类型](../../packages/ui/contract.ts)、[Conversation 导出](../../packages/ui/conversation.ts)
 - [书深动作处理](../../apps/serve/service/capabilities/api/routes.py)、[科研卡片端口](../../apps/desktop/src/renderer/src/features/literature/ports.ts)

@@ -1,6 +1,7 @@
 import type { PreviewAuthorizationKind, PreviewAuthorizationState } from './authorization.ts'
 
 export interface PreviewConversationPolicy {
+  editing?: boolean
   references?: boolean
   mixedReferences?: boolean
   draftReferences?: boolean

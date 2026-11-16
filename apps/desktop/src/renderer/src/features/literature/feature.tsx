@@ -7,6 +7,7 @@ import { literatureJoinTasks } from './admission'
 
 import type { FeatureModule } from '../../contracts/features'
 import { LiteratureList } from './LiteratureList'
+import { Discovery } from './Discovery'
 import { LiteraturePanel } from './LiteraturePanel'
 import { LiteratureCard } from './Card'
 import { literaturePublicComponents } from './Component'
@@ -32,6 +33,10 @@ import {
 import { LITERATURE_NOTES_PANEL_ID, literatureIdFromDocument } from './note'
 import { reviewSupersessionKey, searchSupersessionKey } from './projection'
 
+function LiteratureOverview(): React.JSX.Element {
+  return <LiteratureList />
+}
+
 function LiteratureScope({ children }: { children: React.ReactNode }): React.JSX.Element | null {
   const { state } = useApp()
   const { projectId } = useCatalogue()
@@ -46,6 +51,12 @@ export function literatureFeature(): FeatureModule {
     taskSources: [literatureJoinTasks],
     publicComponents: literaturePublicComponents,
     activityItems: [
+      {
+        key: 'discovery',
+        label: (i18n) => i18n.getFixedT(null, 'literature')('discovery.title'),
+        icon: 'search',
+        order: 20,
+      },
       {
         key: 'literature',
         label: (i18n) => i18n.getFixedT(null, 'layout')('literature'),
@@ -67,6 +78,14 @@ export function literatureFeature(): FeatureModule {
     ],
     viewerPlugins: [
       {
+        kind: 'discovery',
+        render: () => (
+          <LiteratureScope>
+            <Discovery />
+          </LiteratureScope>
+        ),
+      },
+      {
         kind: 'project-literature',
         render: () => (
           <LiteratureScope>
@@ -78,7 +97,7 @@ export function literatureFeature(): FeatureModule {
         kind: 'literature',
         render: () => (
           <LiteratureScope>
-            <LiteratureList />
+            <LiteratureOverview />
           </LiteratureScope>
         ),
       },

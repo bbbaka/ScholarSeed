@@ -25,7 +25,9 @@ export function projectFeature(): FeatureModule {
         key: 'project-navigation',
         title: (i18n) => i18n.getFixedT(null, 'layout')('tasks'),
         slot: 'navigation',
-        render: () => <ProjectNavigation />,
+        render: (props) => (
+          <ProjectNavigation actions={props?.actions} sessionGroups={props?.sessionGroups} />
+        ),
       },
       {
         key: 'project-manage',

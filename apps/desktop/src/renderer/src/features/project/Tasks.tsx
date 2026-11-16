@@ -44,11 +44,15 @@ import {
   type SessionDropTarget,
 } from './drag'
 import { SessionDropIndicator } from './Indicator'
+import type { NavigationSession } from './grouping'
+import type { SessionGroupActions } from '../../contracts/features'
 
 interface TasksProps {
-  rows: ServeSession[]
+  rows: NavigationSession[]
   pending: Set<string>
   onPin: (row: ServeSession) => void
+  onOpen?: (row: NavigationSession) => void
+  opening?: boolean
   registerAction: (id: string, button: HTMLButtonElement | null) => void
   projectPath?: string
   onDragStart?: (row: ServeSession, event: DragEvent<HTMLDivElement>) => void
@@ -66,6 +70,8 @@ export function Tasks({
   rows,
   pending,
   onPin,
+  onOpen,
+  opening,
   registerAction,
   projectPath,
   onDragStart,
@@ -123,11 +129,15 @@ export function Tasks({
     <>
       {visibleRows.map(({ row, child, childCount }) => {
         const hasChildren = childCount > 0
+        const renderActions =
+          row.navigationActions ??
+          ((children: (actions?: SessionGroupActions) => React.ReactNode) => children())
         const orderTarget =
           draggedSession && !draggedSession.display_parent_session_id && child
             ? (byId.get(row.display_parent_session_id ?? '') ?? row)
             : row
         const canDrop = Boolean(
+          !row.navigationGroup &&
           onOrder &&
           draggedSession &&
           !detaching &&
@@ -168,6 +178,7 @@ export function Tasks({
             key={row.session_id}
             data-testid={`project-task-${row.session_id}`}
             draggable={Boolean(
+              !row.navigationGroup &&
               onDragStart &&
               canDragSession(row, projectPath) &&
               !detaching &&
@@ -336,69 +347,79 @@ export function Tasks({
                       </span>
                     )}
                   </div>
-                  <DropdownMenu
-                    open={menuSessionId === row.session_id}
-                    onOpenChange={(open) =>
-                      setMenuSessionId((current) =>
-                        open ? row.session_id : current === row.session_id ? null : current
-                      )
-                    }
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <IconButton
-                        data-session-actions
-                        ref={(button) => registerAction(row.session_id, button)}
-                        variant="ghostIcon"
-                        size="xs"
-                        className="pointer-events-none absolute right-0 opacity-0 group-hover/project-task:static group-hover/project-task:pointer-events-auto group-hover/project-task:opacity-[var(--vds-opacity-full)] group-focus-within/project-task:static group-focus-within/project-task:pointer-events-auto group-focus-within/project-task:opacity-[var(--vds-opacity-full)] aria-expanded:static aria-expanded:pointer-events-auto aria-expanded:opacity-[var(--vds-opacity-full)]"
-                        label={t('taskActions')}
-                        icon={<EllipsisVertical />}
-                      />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent>
-                      <DropdownMenuItem
-                        disabled={pending.has(row.session_id)}
-                        onSelect={() => onPin(row)}
-                      >
-                        {row.pinned ? <PinOff /> : <Pin />}
-                        {t(row.pinned ? 'unpin' : 'pin')}
-                      </DropdownMenuItem>
-                      <SessionForkMenuItem
-                        sessionId={row.session_id}
-                        Item={DropdownMenuItem}
-                        onForked={() => setMenuSessionId(null)}
-                      />
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          set({
-                            sessionRename: { sessionId: row.session_id, originalTitle: row.title },
-                          })
-                        }
-                      >
-                        <Pencil />
-                        {assistantText('panel.rename')}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          set({
-                            sessionArchive: {
-                              sessionId: row.session_id,
-                              title: sessionDisplayTitle(row, assistantText),
-                            },
-                          })
-                        }
-                        data-testid="project-task-archive"
-                      >
-                        <Archive />
-                        {t('archiveTask')}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem destructive onSelect={() => remove(row)}>
-                        <Trash2 />
-                        {assistantText('panel.delete')}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {renderActions((actions) => (
+                    <DropdownMenu
+                      open={menuSessionId === row.session_id}
+                      onOpenChange={(open) =>
+                        setMenuSessionId((current) =>
+                          open ? row.session_id : current === row.session_id ? null : current
+                        )
+                      }
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <IconButton
+                          data-session-actions
+                          ref={(button) => registerAction(row.session_id, button)}
+                          variant="ghostIcon"
+                          size="xs"
+                          className="pointer-events-none absolute right-0 opacity-0 group-hover/project-task:static group-hover/project-task:pointer-events-auto group-hover/project-task:opacity-[var(--vds-opacity-full)] group-focus-within/project-task:static group-focus-within/project-task:pointer-events-auto group-focus-within/project-task:opacity-[var(--vds-opacity-full)] aria-expanded:static aria-expanded:pointer-events-auto aria-expanded:opacity-[var(--vds-opacity-full)]"
+                          label={t('taskActions')}
+                          icon={<EllipsisVertical />}
+                        />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent>
+                        <DropdownMenuItem
+                          disabled={pending.has(row.session_id)}
+                          onSelect={() => onPin(row)}
+                        >
+                          {row.pinned ? <PinOff /> : <Pin />}
+                          {t(row.pinned ? 'unpin' : 'pin')}
+                        </DropdownMenuItem>
+                        <SessionForkMenuItem
+                          sessionId={row.session_id}
+                          Item={DropdownMenuItem}
+                          onForked={() => setMenuSessionId(null)}
+                        />
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            set({
+                              sessionRename: {
+                                sessionId: row.session_id,
+                                originalTitle: row.title,
+                              },
+                            })
+                          }
+                        >
+                          <Pencil />
+                          {assistantText('panel.rename')}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            actions
+                              ? actions.archive()
+                              : set({
+                                  sessionArchive: {
+                                    sessionId: row.session_id,
+                                    title: sessionDisplayTitle(row, assistantText),
+                                  },
+                                })
+                          }
+                          data-testid="project-task-archive"
+                        >
+                          <Archive />
+                          {t('archiveTask')}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          destructive
+                          onSelect={() => (actions ? actions.remove() : remove(row))}
+                        >
+                          <Trash2 />
+                          {assistantText('panel.delete')}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ))}
                 </div>
               )}
             </div>

@@ -20,6 +20,7 @@
 #define PATH_UNITS 32760
 #else
 #include <errno.h>
+#include <copyfile.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <membership.h>
@@ -148,14 +149,19 @@ const char *directory_ancestor(struct directory *directory, size_t index) {
   return index < directory->count ? directory->identities[index] : NULL;
 }
 
-static bool leaf_name(const char *name) {
+static bool valid_leaf_name(const char *name, bool mixed_case) {
   size_t length = strlen(name);
   if (!length || length > LEAF_BYTES || name[0] == '.' || name[length - 1] == '.') return false;
   for (size_t i = 0; i < length; i++) {
-    if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9') ||
+    if (!((name[i] >= 'a' && name[i] <= 'z') || (mixed_case && name[i] >= 'A' && name[i] <= 'Z') ||
+          (name[i] >= '0' && name[i] <= '9') ||
           name[i] == '-' || name[i] == '_' || name[i] == '.')) return false;
   }
   return true;
+}
+
+static bool leaf_name(const char *name) {
+  return valid_leaf_name(name, false);
 }
 
 static bool child_name(const char *name) {
@@ -758,7 +764,9 @@ enum record_access { RECORD_READ, RECORD_LOCK, RECORD_LOCK_EXISTING, RECORD_CREA
 
 static file_handle open_relative_file(struct directory *directory, const char *name,
                                      enum record_access access, struct directory_error *error) {
-  if (!leaf_name(name)) { failure(error, "ERR_LEASE_ARGUMENT", 0); return INVALID_FILE; }
+  if (!valid_leaf_name(name, access == RECORD_READ && directory->role == DIRECTORY_PROJECT)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return INVALID_FILE;
+  }
   size_t length = strlen(name);
   wchar_t wide[LEAF_BYTES + 1] = {0};
   for (size_t i = 0; i < length; i++) wide[i] = (wchar_t)name[i];
@@ -1247,7 +1255,7 @@ bool directory_read(struct directory *directory, const char *name, unsigned char
                     size_t limit, size_t *length, bool *missing, struct directory_error *error) {
   *length = 0;
   *missing = false;
-  if (!leaf_name(name) || !limit || limit > DIRECTORY_READ_LIMIT) {
+  if (!valid_leaf_name(name, directory->role == DIRECTORY_PROJECT) || !limit || limit > DIRECTORY_READ_LIMIT) {
     failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
   }
   int file = openat(directory->handles[directory->count - 1], name,
@@ -1294,7 +1302,7 @@ done:
 
 
 #ifdef __APPLE__
-static bool consume_namespace(struct directory *directory, struct directory_error *error) {
+static bool bound_namespace(struct directory *directory, struct directory_error *error) {
   struct directory *current = open_directory(directory->path, false, true, directory->role, error);
   if (!current) return false;
   bool valid = !strcmp(directory_identity(directory), directory_identity(current)) &&
@@ -1307,7 +1315,7 @@ static bool consume_namespace(struct directory *directory, struct directory_erro
   return valid;
 }
 
-static bool consume_same_record(const struct stat *before, const struct stat *after) {
+static bool same_record(const struct stat *before, const struct stat *after) {
   return before->st_dev == after->st_dev && before->st_ino == after->st_ino &&
     before->st_size == after->st_size && before->st_mode == after->st_mode &&
     before->st_uid == after->st_uid && before->st_gid == after->st_gid && after->st_nlink == 1 &&
@@ -1315,6 +1323,96 @@ static bool consume_same_record(const struct stat *before, const struct stat *af
     before->st_mtimespec.tv_nsec == after->st_mtimespec.tv_nsec &&
     before->st_ctimespec.tv_sec == after->st_ctimespec.tv_sec &&
     before->st_ctimespec.tv_nsec == after->st_ctimespec.tv_nsec;
+}
+
+bool directory_replace_project(struct directory *directory, const char *name,
+                               const unsigned char *expected, size_t expected_length,
+                               const unsigned char *next, size_t next_length,
+                               struct directory_error *error) {
+  if (directory->role != DIRECTORY_PROJECT || !valid_leaf_name(name, true) ||
+      !expected || !expected_length || expected_length > DIRECTORY_READ_LIMIT ||
+      !next || !next_length || next_length > DIRECTORY_READ_LIMIT) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  int parent = directory->handles[directory->count - 1];
+  if (flock(parent, LOCK_EX | LOCK_NB)) {
+    failure(error, errno == EWOULDBLOCK ? "ERR_LEASE_BUSY" : "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  int original = -1, staged = -1;
+  bool published = false, success = false;
+  struct stat before, after, located, stage_info;
+  char temporary[64] = {0};
+  unsigned char *observed = NULL;
+  if (!bound_namespace(directory, error)) goto done;
+  original = openat(parent, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+  if (original < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  if (fstat(original, &before)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  if (!S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_uid != geteuid() ||
+      !(before.st_mode & S_IWUSR) || (before.st_mode & (S_ISUID | S_ISGID | S_ISVTX)) || before.st_flags) {
+    failure(error, "ERR_LEASE_FILE", 0); goto done;
+  }
+  if (!permissions(original, false, error)) goto done;
+  if (before.st_size != (off_t)expected_length) {
+    failure(error, "ERR_LEASE_CHANGED", 0); goto done;
+  }
+  uuid_t identity;
+  char suffix[37];
+  uuid_generate_random(identity);
+  uuid_unparse_lower(identity, suffix);
+  snprintf(temporary, sizeof(temporary), ".scholarseed-replace-%s", suffix);
+  staged = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (staged < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
+  for (size_t offset = 0; offset < next_length;) {
+    ssize_t written = write(staged, next + offset, next_length - offset);
+    if (written <= 0) { failure(error, "ERR_LEASE_NATIVE", written < 0 ? (uint32_t)errno : EIO); goto done; }
+    offset += (size_t)written;
+  }
+  if (fchown(staged, (uid_t)-1, before.st_gid) || fchmod(staged, before.st_mode & 0777) ||
+      fcopyfile(original, staged, NULL, COPYFILE_ACL | COPYFILE_XATTR) || fsync(staged) ||
+      fstat(staged, &stage_info)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done;
+  }
+  if (!S_ISREG(stage_info.st_mode) || stage_info.st_nlink != 1 || stage_info.st_size != (off_t)next_length) {
+    failure(error, "ERR_LEASE_CHANGED", 0); goto done;
+  }
+  if (!permissions(staged, false, error)) goto done;
+  observed = malloc(expected_length);
+  if (!observed) { failure(error, "ERR_LEASE_ALLOCATION", 0); goto done; }
+  for (size_t offset = 0; offset < expected_length;) {
+    ssize_t received = pread(original, observed + offset, expected_length - offset, (off_t)offset);
+    if (received <= 0) { failure(error, "ERR_LEASE_CHANGED", received < 0 ? (uint32_t)errno : 0); goto done; }
+    offset += (size_t)received;
+  }
+  if (memcmp(expected, observed, expected_length)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
+  if (!bound_namespace(directory, error)) goto done;
+  if (fstat(original, &after) || fstatat(parent, name, &located, AT_SYMLINK_NOFOLLOW) ||
+      !same_record(&before, &after) || !same_record(&after, &located) ||
+      fstatat(parent, temporary, &located, AT_SYMLINK_NOFOLLOW) || !same_record(&stage_info, &located)) {
+    failure(error, "ERR_LEASE_CHANGED", 0); goto done;
+  }
+  if (renameat(parent, temporary, parent, name)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done;
+  }
+  published = true;
+  if (fsync(parent)) { failure(error, "ERR_LEASE_SYNC", (uint32_t)errno); goto done; }
+  success = bound_namespace(directory, error);
+done:
+  free(observed);
+  if (staged >= 0 && !published && !fstat(staged, &stage_info) &&
+      !fstatat(parent, temporary, &located, AT_SYMLINK_NOFOLLOW) &&
+      stage_info.st_dev == located.st_dev && stage_info.st_ino == located.st_ino &&
+      unlinkat(parent, temporary, 0)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+  }
+  uint32_t stage_close = staged < 0 ? 0 : close_handle(staged);
+  uint32_t original_close = original < 0 ? 0 : close_handle(original);
+  if (flock(parent, LOCK_UN) || stage_close || original_close) {
+    failure(error, "ERR_LEASE_RELEASE", stage_close ? stage_close : original_close ? original_close : (uint32_t)errno);
+    success = false;
+  }
+  if (published && !success) failure(error, "ERR_LEASE_RESULT_UNKNOWN", error->system);
+  return success;
 }
 
 /* Caller holds exclusive domain admission and occupancy. Use the pinned
@@ -1326,7 +1424,7 @@ bool directory_prune_lock_only(struct directory *directory, const char *name, bo
     failure(error, "ERR_LEASE_ARGUMENT", 0);
     return false;
   }
-  if (!consume_namespace(directory, error)) return false;
+  if (!bound_namespace(directory, error)) return false;
   int child = directory->handles[directory->count - 1];
   int parent = directory->handles[directory->count - 2];
   const char *leaf = strrchr(directory->path, '/') + 1;
@@ -1368,14 +1466,14 @@ bool directory_prune_lock_only(struct directory *directory, const char *name, bo
       goto done;
     }
     if (!S_ISREG(held.st_mode) || held.st_size || held.st_uid != geteuid() ||
-        !consume_same_record(&held, &located)) {
+        !same_record(&held, &located)) {
       failure(error, "ERR_LEASE_CHANGED", 0);
       goto done;
     }
-    if (!permissions(lock, false, error) || !consume_namespace(directory, error)) goto done;
+    if (!permissions(lock, false, error) || !bound_namespace(directory, error)) goto done;
     if (unlinkat(child, name, 0)) { failure(error, "ERR_LEASE_NATIVE", errno); goto done; }
   }
-  if (!consume_namespace(directory, error)) goto done;
+  if (!bound_namespace(directory, error)) goto done;
   if (unlinkat(parent, leaf, AT_REMOVEDIR)) {
     if (errno == ENOTEMPTY) valid = true;
     else failure(error, "ERR_LEASE_NATIVE", errno);
@@ -1403,7 +1501,7 @@ bool directory_consume(struct directory *directory, const char *name, const unsi
   if (!leaf_name(name) || !expected || !length || length > DIRECTORY_READ_LIMIT) {
     failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
   }
-  if (!consume_namespace(directory, error)) return false;
+  if (!bound_namespace(directory, error)) return false;
   int parent = directory->handles[directory->count - 1];
   int file = openat(parent, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (file < 0) {
@@ -1438,15 +1536,15 @@ bool directory_consume(struct directory *directory, const char *name, const unsi
     failure(error, "ERR_LEASE_CHANGED", 0); goto done;
   }
   if (fstat(file, &after)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
-  if (!consume_same_record(&before, &after)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
-  if (!permissions(file, false, error) || !consume_namespace(directory, error)) goto done;
+  if (!same_record(&before, &after)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
+  if (!permissions(file, false, error) || !bound_namespace(directory, error)) goto done;
   if (fstatat(parent, name, &located, AT_SYMLINK_NOFOLLOW)) {
     failure(error, "ERR_LEASE_CHANGED", (uint32_t)errno); goto done;
   }
-  if (!consume_same_record(&after, &located)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
+  if (!same_record(&after, &located)) { failure(error, "ERR_LEASE_CHANGED", 0); goto done; }
   if (unlinkat(parent, name, 0)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto done; }
   if (fsync(parent)) { failure(error, "ERR_LEASE_SYNC", (uint32_t)errno); goto done; }
-  valid = consume_namespace(directory, error);
+  valid = bound_namespace(directory, error);
 done:
   free(observed);
   {

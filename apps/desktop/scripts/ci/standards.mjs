@@ -214,7 +214,7 @@ function generateTokens() {
   const definitionFiles = [...walk(designDir, ['.css']), join(DESKTOP_DIR, 'src/renderer/src/styles.css')].filter(existsSync).sort()
   const definitions = new Map()
   for (const path of definitionFiles) {
-    postcss.parse(readFileSync(path, 'utf8'), { from: path }).walkDecls(/^--/, (declaration) => {
+    postcss.parse(readFileSync(path, 'utf8').replaceAll('\r\n', '\n'), { from: path }).walkDecls(/^--/, (declaration) => {
       const items = definitions.get(declaration.prop) ?? []
       const selector = declaration.parent?.selector ?? `@${declaration.parent?.name ?? 'root'}`
       items.push({ path: key(path), selector, value: declaration.value.trim() })

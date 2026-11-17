@@ -63,7 +63,7 @@ test('resource tree depth uses custom properties without relaxing visual inline 
 })
 
 test('Desktop E2E CI installs the Electron runtime before launching smoke tests', () => {
-  const pipeline = readFileSync(new URL('.gitlab-ci.yml', REPOSITORY_ROOT), 'utf8')
+  const pipeline = readFileSync(new URL('.gitlab-ci.yml', REPOSITORY_ROOT), 'utf8').replaceAll('\r\n', '\n')
   const job = pipeline.match(/desktop-e2e-smoke:\n([\s\S]*?)(?=\n[^\s#][^\n]*:\n|$)/)?.[1] ?? ''
   assert.ok(job.includes('npm ci --no-audit --no-fund'))
   assert.ok(!job.includes('npm ci --ignore-scripts'))

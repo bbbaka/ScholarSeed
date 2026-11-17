@@ -14,7 +14,7 @@ const PREFIX = 'apps/desktop/src/renderer/src/'
 export const VISUAL_BASE = 'a0e89c828949f83168fcf3687e21380238b42565'
 const MAX_GIT_OUTPUT = 64 * 1024 * 1024
 const SNAPSHOT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'visualbaseline.json')
-const SNAPSHOT_SHA256 = '1ac190638cab1e7789b977336266a0a60d7734c6a68bf724abf5094216c39ae8'
+const SNAPSHOT_SHA256 = 'b7d0a13ee824301f6622e92f6f669ac8ee77503727869fbe9a9330a2cab4234b'
 const EXCLUDED = /(?:\/design\/|\/assets\/|\/components\/examples\/|\/components\/primitive\/Iconfont\/download\/|\.test\.|\.fixture\.|\.d\.ts$)/
 const VISUAL_PROPERTY = /^(?:zIndex|z-index|gap|rowGap|columnGap|(?:row|column)-gap|padding(?:[A-Z][a-z]+|-[a-z]+)*|margin(?:[A-Z][a-z]+|-[a-z]+)*|(?:min|max)?(?:Width|Height)|(?:min-|max-)?(?:width|height)|font(?:Size|Weight|Family)|font-(?:size|weight|family)|lineHeight|line-height|letterSpacing|letter-spacing|border(?:TopLeft|TopRight|BottomLeft|BottomRight|StartStart|StartEnd|EndStart|EndEnd)?Radius|border-(?:(?:top|bottom)-(?:left|right)-|(?:start|end)-(?:start|end)-)?radius|boxShadow|box-shadow|opacity)$/
 const STRUCTURAL = /^(?:0(?:px|rem|em|%)?|auto|none|full|screen|svh|dvh|lvh|min|max|fit|100%|inherit|initial|unset|min-content|max-content|fit-content|\d+\/\d+)$/
@@ -81,7 +81,7 @@ export function visualFindings(source, filename = 'source.tsx') {
   const hits = []
   const add = (owner, kind, value, line) => hits.push({ identity: JSON.stringify([owner, kind, value]), kind, value, line })
   if (filename.endsWith('.css')) {
-    postcss.parse(source, { from: filename }).walkDecls((decl) => {
+    postcss.parse(source.replaceAll('\r\n', '\n'), { from: filename }).walkDecls((decl) => {
       if (!VISUAL_PROPERTY.test(decl.prop)) return
       const forbidden = decl.prop === 'z-index'
         ? decl.value !== 'auto' && !/^var\(--vds-[\w-]+\)$/.test(decl.value)

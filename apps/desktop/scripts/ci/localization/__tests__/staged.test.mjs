@@ -32,6 +32,9 @@ test('index calls, resources and generated types cannot borrow unstaged fixes', 
     for (const language of ['zh', 'en']) write(`src/localization/locales/${language}/foundation.json`, JSON.stringify(resources[language].foundation))
     git('add', 'apps', 'scripts', 'packages', 'skills'); git('commit', '-qm', 'fixture baseline')
     assert.deepEqual(checkStaged(options), { checked: false, errors: [] })
+    write('src/localization/types.d.ts', types.replaceAll('\n', '\r\n'))
+    assert.deepEqual(checkResourceFiles({ desktop }), resources, 'Windows line endings must not change generated content')
+    write('src/localization/types.d.ts', types)
 
     write('src/main/messages.ts', code.replace(", {name:'Ada'}", ''))
     git('add', 'apps')

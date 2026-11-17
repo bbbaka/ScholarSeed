@@ -143,7 +143,7 @@ export function checkResourceFiles({ write = false, desktop = DESKTOP } = {}) {
   const outputs = [[resolve(desktop, 'src/localization/types.d.ts'), generateTypes(resources)], [resolve(desktop, 'src/localization/resources.ts'), generateRegistration(resources)]]
   for (const [path, output] of outputs) {
     if (write) writeFileSync(path, output)
-    else if (readFileSync(path, 'utf8') !== output) throw new Error(`Generated localization artifact drifted: ${path}; run i18n:generate`)
+    else if (readFileSync(path, 'utf8').replaceAll('\r\n', '\n') !== output) throw new Error(`Generated localization artifact drifted: ${path}; run i18n:generate`)
   }
   return resources
 }

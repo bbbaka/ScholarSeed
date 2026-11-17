@@ -226,6 +226,8 @@ test('CSS identities allow old rules and deletions, reject replacement and new f
   const source = '.legacy { display: flex; color: var(--vds-text-primary); }'
   const baseline = { 'old.css': cssInventory(source) }
   assert.deepEqual(cssDebtErrors([['old.css', `/* comment */ ${source}`]], baseline), [])
+  const multiline = '.legacy,\n.other { display: flex; }'
+  assert.deepEqual(cssDebtErrors([['old.css', multiline.replaceAll('\n', '\r\n')]], { 'old.css': cssInventory(multiline) }), [])
   assert.deepEqual(cssDebtErrors([['old.css', '']], baseline), [])
   assert.match(cssDebtErrors([['old.css', '.new { display: flex; }']], baseline).join('\n'), /new or changed/)
   assert.match(cssDebtErrors([['old.css', source.replace('flex', 'grid')]], baseline).join('\n'), /new or changed/)

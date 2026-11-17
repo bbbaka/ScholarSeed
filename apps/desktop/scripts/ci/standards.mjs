@@ -338,7 +338,7 @@ export function checkStandards() {
   validateLinks(join(DOCS_DIR, 'README.md'), readFileSync(join(DOCS_DIR, 'README.md'), 'utf8'), errors)
   for (const [path, expected] of generatedDocuments()) {
     const absolute = join(DOCS_DIR, path)
-    if (!existsSync(absolute) || readFileSync(absolute, 'utf8') !== expected) errors.push(`${path}: stale; run npm run docs:write`)
+    if (!existsSync(absolute) || readFileSync(absolute, 'utf8').replaceAll('\r\n', '\n') !== expected) errors.push(`${path}: stale; run npm run docs:write`)
   }
   const architecture = scanArchitecture()
   for (const hit of architecture.deepImports) errors.push(`UI deep import: ${hit.path} -> ${hit.specifier}`)

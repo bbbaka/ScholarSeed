@@ -86,6 +86,8 @@ test('CSS identities retain selector and media context and accept token referenc
   const source = '@media (width > 700px) { .x { gap: 16px; width: 100%; border-radius: var(--vds-radius-4); } }'
   assert.equal(visualFindings(source, 'test.css').length, 1)
   assert.equal(newVisualFindings(visualFindings(source.replace('.x', '.y'), 'test.css'), visualFindings(source, 'test.css')).length, 1)
+  const multiline = '.x,\n.y { box-shadow: 0 1px red,\n  0 2px blue; }'
+  assert.deepEqual(newVisualFindings(visualFindings(multiline.replaceAll('\n', '\r\n'), 'test.css'), visualFindings(multiline, 'test.css')), [])
 })
 
 test('core UI layer gate allows only semantic z-index tokens', () => {

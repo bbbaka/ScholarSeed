@@ -458,6 +458,7 @@ export function MenuSubTrigger({
   className,
   inset = false,
   openOnHover = false,
+  showArrow = true,
   onPointerEnter,
   onPointerMove,
   onKeyDown,
@@ -466,6 +467,7 @@ export function MenuSubTrigger({
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   inset?: boolean
   openOnHover?: boolean
+  showArrow?: boolean
 }): React.JSX.Element {
   const { contentId, open, setOpen, setPosition, triggerRef } = useMenuContext('MenuSubTrigger')
   const pointerMotion = useContext(MenuPointerMotionContext)
@@ -536,7 +538,7 @@ export function MenuSubTrigger({
       {...props}
     >
       {children}
-      <MenuArrow />
+      {showArrow && <MenuArrow />}
     </button>
   )
 }

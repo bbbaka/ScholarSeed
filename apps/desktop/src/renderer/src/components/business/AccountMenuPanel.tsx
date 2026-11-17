@@ -12,7 +12,6 @@ import {
   Sun,
   Moon,
   Monitor,
-  Check,
 } from 'lucide-react'
 import type { AccountMenuAction, AccountMenuView, MenuItem, MenuValue } from '../../../../menu'
 import { MENU_ACTION } from '../../../../menu'
@@ -87,8 +86,9 @@ export function AccountMenuPanel({
             >
               <DropdownMenuSubTrigger
                 data-testid={appearance ? 'account-menu-appearance' : 'account-menu-language'}
-                className="h-auto! min-w-0 py-[var(--vds-space-2)]!"
+                className="min-w-0"
                 disabled={view.logoutBusy}
+                showArrow={false}
                 onFocus={(event) => {
                   languageTrigger.current = event.currentTarget
                 }}
@@ -98,11 +98,11 @@ export function AccountMenuPanel({
                 ) : (
                   <Globe size={ACCOUNT_ICON_SIZE} />
                 )}
-                <span className="min-w-0 flex-1 text-left">
-                  <span className="block">
-                    {translate(appearance ? 'preferences.appearance' : 'preferences.language')}
-                  </span>
-                  <span className="block text-[var(--vds-text-tertiary)]">{selected?.label}</span>
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {translate(appearance ? 'preferences.appearance' : 'preferences.language')}
+                </span>
+                <span className="min-w-0 truncate text-right text-[var(--vds-text-tertiary)]">
+                  {selected?.label}
                 </span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
@@ -153,12 +153,6 @@ export function AccountMenuPanel({
                           />
                         )}
                         {option.label}
-                        {appearance && option.checked && (
-                          <Check
-                            size={ACCOUNT_ICON_SIZE}
-                            className="ml-auto text-[var(--vds-brand-text-primary)]"
-                          />
-                        )}
                       </DropdownMenuItem>
                     )
                 )}

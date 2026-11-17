@@ -56,7 +56,7 @@ const LANGUAGE_OPTION_ACTIVE_CLASS_NAME =
 const LANGUAGE_OPTION_MARK_CLASS_NAME =
   'w-5 flex-none text-center text-[14px] text-[var(--vds-text-secondary)]'
 const LANGUAGE_COMPACT_POPOVER_CLASS_NAME =
-  'no-drag z-[var(--vds-z-preferences-language-menu)] min-w-[var(--vds-language-menu-min-width)] gap-[var(--vds-space-half)] rounded-[var(--vds-language-menu-radius)] border-0 bg-white p-[calc(var(--vds-space-3)/2)] shadow-[var(--vds-language-menu-shadow)]'
+  'no-drag !z-[var(--vds-z-landing-language-menu)] min-w-[var(--vds-language-menu-min-width)] gap-[var(--vds-space-half)] rounded-[var(--vds-language-menu-radius)] border-0 bg-white p-[calc(var(--vds-space-3)/2)] shadow-[var(--vds-language-menu-shadow)]'
 const LANGUAGE_COMPACT_OPTION_CLASS_NAME =
   'flex !h-[var(--vds-control-height-md)] min-h-[var(--vds-control-height-md)] w-full items-center justify-start gap-[calc(var(--vds-space-5)/2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent !px-[calc(var(--vds-space-5)/2)] !py-0 text-left text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-control-label-line-height)] text-[var(--vds-text-primary)] shadow-none hover:bg-[var(--vds-surface-hover)] focus-visible:shadow-none'
 const LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME = 'bg-[var(--vds-other-overlay-1)]'

@@ -58,6 +58,8 @@
   --vds-z-update-entry-tooltip: calc(var(--vds-z-update-entry-panel) + 1);
   --vds-z-context-menu: 1300;
   --vds-z-overlay: 5000;
+  /* The signed-out landing page opens its language menu in the document portal. */
+  --vds-z-landing-language-menu: calc(var(--vds-z-overlay) + 1);
   --vds-z-modal: 6000;
   --vds-z-modal-nested-overlay: calc(var(--vds-z-modal) + 1);
   --vds-z-modal-nested: calc(var(--vds-z-modal-nested-overlay) + 1);

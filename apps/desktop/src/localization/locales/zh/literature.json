@@ -39,6 +39,7 @@
       "imageUnavailable": "图表暂不可用，可查看原文",
       "sourceDetails": "原始论文与来源",
       "doi": "DOI：{{value}}",
+      "arxiv": "arXiv：{{value}}",
       "figureRights": "图表来自原始论文，依 CC BY 4.0 使用；仅等比缩放，未改动图中内容。中文解读为编辑整理，不是作者原文。",
       "figureSource": "图表原始出处",
       "openReading": "速读 {{name}}",

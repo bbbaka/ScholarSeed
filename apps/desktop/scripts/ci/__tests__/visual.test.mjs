@@ -1,8 +1,34 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import postcss from 'postcss'
-import { isFixedVisualClass, layerTokenFindings, newVisualFindings, unknownLayerTokenFindings, visualFindings } from '../visual.mjs'
+import { isFixedVisualClass, layerTokenFindings, newVisualFindings, unknownLayerTokenFindings, visualErrors, visualFindings } from '../visual.mjs'
+
+test('audited visual budget works without historical Git objects and checks worktree and index', () => {
+  const root = mkdtempSync(join(tmpdir(), 'visual-audited-'))
+  const file = 'apps/desktop/src/renderer/src/App.tsx'
+  const absolute = join(root, file)
+  const allowed = 'function AppMain() { return <div className="!h-[min(720px,calc(100vh-48px))]" /> }\n'
+  const invalid = allowed.replace('!h-[min(720px,calc(100vh-48px))]', '!h-[min(720px,calc(100vh-48px))] gap-4')
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
+  try {
+    git('init', '-q')
+    mkdirSync(dirname(absolute), { recursive: true })
+    writeFileSync(absolute, allowed)
+    git('add', file)
+    assert.deepEqual(visualErrors({ root }), [])
+    writeFileSync(absolute, invalid)
+    assert.ok(visualErrors({ root }).some((error) => error.includes('gap-4 [worktree]')))
+    git('add', file)
+    writeFileSync(absolute, allowed)
+    assert.ok(visualErrors({ root }).some((error) => error.includes('gap-4 [index]')))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 // The gate must recognize alternate syntaxes, not just the examples in the guide.
 test('visual utilities reject fixed values across variants and arbitrary properties', () => {

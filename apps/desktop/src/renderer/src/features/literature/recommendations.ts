@@ -141,10 +141,10 @@ export function paperOriginalUrl(paper: LiteratureSearchPaper): string | null {
 
 export function paperIdentifier(
   paper: LiteratureSearchPaper
-): { label: string; url: string } | null {
+): { kind: 'arxiv' | 'doi'; value: string; url: string } | null {
   if (paper.arxiv_id)
-    return { label: `arXiv:${paper.arxiv_id}`, url: `https://arxiv.org/abs/${paper.arxiv_id}` }
-  if (paper.doi) return { label: `DOI: ${paper.doi}`, url: `https://doi.org/${paper.doi}` }
+    return { kind: 'arxiv', value: paper.arxiv_id, url: `https://arxiv.org/abs/${paper.arxiv_id}` }
+  if (paper.doi) return { kind: 'doi', value: paper.doi, url: `https://doi.org/${paper.doi}` }
   return null
 }
 

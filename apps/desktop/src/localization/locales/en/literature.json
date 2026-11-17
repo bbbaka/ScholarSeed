@@ -39,6 +39,7 @@
       "imageUnavailable": "Figure unavailable — see the original paper",
       "sourceDetails": "Original paper & sources",
       "doi": "DOI: {{value}}",
+      "arxiv": "arXiv:{{value}}",
       "figureRights": "Figures reproduced from the original papers under CC BY 4.0; proportionally resized without changing their content. Reading notes are editorial interpretations, not author text.",
       "figureSource": "Original figure",
       "openReading": "Quick-read {{name}}",

@@ -12,6 +12,7 @@ const INPUT_PATHS = [
   DESKTOP_PATH,
   'scripts',
   'packages/ui',
+  'PDFE-iterations.json',
   'skills/community/literature-review/components/outline.json',
   'skills/community/literature-review/components/review.json',
 ]

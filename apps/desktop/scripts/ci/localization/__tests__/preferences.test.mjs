@@ -32,7 +32,7 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
           getLocale: () => 'en-US',
           getPreferredSystemLanguages: () => ['en-US']
         }` }))
-        builder.onResolve({ filter: /(?:^|\/)writer$/ }, (args) => {
+        builder.onResolve({ filter: /(?:^|\/)writer(?:\.ts)?$/ }, (args) => {
           if (!args.importer.startsWith(join(DESKTOP, 'src', 'main')) && args.path !== './src/main/writer') return
           return { path: 'writer', namespace: 'preference-writer' }
         })
@@ -46,6 +46,26 @@ test('main startup tolerates damaged preferences but reconciliation cannot ackno
             return { close() { assert.equal(closed, false); closed = true; writerEvents.push(['release', directory]); } };
           }
         ` }))
+        builder.onResolve({ filter: /(?:^|\/)persistence\.ts$/ }, (args) => {
+          if (!args.importer.startsWith(join(DESKTOP, 'src', 'main'))) return
+          return { path: 'persistence', namespace: 'preference-persistence' }
+        })
+        builder.onLoad({ filter: /.*/, namespace: 'preference-persistence' }, () => ({
+          resolveDir: join(DESKTOP, 'src', 'main'),
+          contents: `
+            import { readPreferences, savePreferences } from './preferencefile.ts';
+            import { PreferenceDiagnostics } from '../preference-diagnostics.ts';
+            export function desktopPersistence() {
+              return { async request(kind, input) {
+                if (kind !== 'preferences') throw new Error('unexpected persistence operation');
+                if (input.mode === 'read') return readPreferences(input.path, input.language);
+                if (input.mode === 'save') return savePreferences(input.path, input.language, input.value,
+                  PreferenceDiagnostics.restore(input.diagnostics, () => {}));
+                throw new Error('unexpected preferences mode');
+              } };
+            }
+          `,
+        }))
       } }]
     })
     const preferences = await import(pathToFileURL(output).href)

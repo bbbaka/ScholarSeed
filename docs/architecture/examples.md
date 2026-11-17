@@ -15,7 +15,6 @@ code_refs:
   - apps/desktop/preview/home.ts
   - apps/desktop/e2e/fixtures/runtime.ts
   - apps/desktop/e2e/fixtures/builders/project.ts
-  - apps/desktop/eval-scenarios/README.md
   - scripts/shared/examples.cjs
   - scripts/shared/preparation.cjs
   - examples/manifest.json
@@ -85,7 +84,7 @@ configuration layer.
 | Projects, user roots, and real persistence | [Persistence boundaries](persistence.md), plus Serve paths and business APIs; data tools must not derive project database paths independently |
 | PDFE scenario policy, generators, and instance ledger | [PDFE overview design](../../apps/desktop/docs/architecture/PDFE.md), [runtime](../../apps/desktop/docs/architecture/preview.md) |
 | Automated runs and assertions | [Testing design](../../apps/desktop/docs/architecture/testing-strategy.md), [acceptance specification](../../apps/desktop/docs/quality/testing.md) |
-| Evaluation requirements, independent references, and adoption status | [Evaluation design](../../apps/desktop/docs/architecture/evaluation.md), [scenario library](../../apps/desktop/eval-scenarios/README.md); input samples do not determine the correct answer |
+| Evaluation requirements, independent references, and adoption status | [Evaluation design](../../apps/desktop/docs/architecture/evaluation.md); scenario assets are maintained separately from this branch, and input samples do not determine the correct answer |
 | Execution, authorization, and judgment | [Build engineering specification](../../apps/desktop/docs/architecture/evaluation.md), [execution engineering specification](../../apps/desktop/docs/architecture/evaluation.md); this document does not duplicate their workflows |
 
 ## Current / Required / Gap / Advisory
@@ -253,8 +252,12 @@ examples/
 
 apps/desktop/preview/           Scenario policies, generators, and VFS/DTO adapters that reference shared definitions
 apps/desktop/e2e/fixtures/      Adapters for real-project preparation and isolated lifecycles
-apps/desktop/eval-scenarios/    Requirements, criteria, independent references, and selected-data references
 ```
+
+Evaluation scenario requirements, criteria, and independent references are maintained separately
+from this branch. Consult the evaluation Owner for the applicable assets and their revision.
+
+评测场景的需求、标准和独立参考资料独立于当前分支维护；请向评测负责人确认适用资产及其版本。
 
 The top-level `examples/` holds reusable example inputs and project definitions; it does not own
 test execution, evaluation criteria, or PDFE business adapters. Each consumer Owner maintains its

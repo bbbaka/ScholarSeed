@@ -6,6 +6,45 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { checkSources, generateDebt } from '../git.mjs'
 
+test('audited localization budget works without historical Git objects and still blocks staged debt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'scholarseed-i18n-portable-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim()
+  const dir = join(root, 'apps/desktop/src/renderer/src')
+  const file = join(dir, 'PortableFixture.tsx')
+  const options = { root, debtPath: join(root, 'debt.json') }
+  const previous = process.env.I18N_BASE_REF
+  try {
+    delete process.env.I18N_BASE_REF
+    mkdirSync(dir, { recursive: true })
+    git('init', '-q')
+    writeFileSync(options.debtPath, JSON.stringify({ version: 1, baseCommit: '405f3f60ee6413b5a8cfc1fffb8f623a42282b54', files: {} }))
+    writeFileSync(file, 'export const Page=()=> <div />')
+    git('add', 'apps')
+    assert.deepEqual(checkSources(undefined, options).errors, [])
+    writeFileSync(file, 'export const Page=()=> <div>New text</div>')
+    assert.match(checkSources(undefined, options).errors.join(), /New text \[worktree\]/)
+    git('add', 'apps')
+    writeFileSync(file, 'export const Page=()=> <div />')
+    assert.match(checkSources(undefined, options).errors.join(), /New text \[index\]/)
+    git('add', file)
+    const legacy = join(root, 'apps/desktop/src/main/appsForFile.ts')
+    mkdirSync(join(root, 'apps/desktop/src/main'), { recursive: true })
+    const legacyPath = 'apps/desktop/src/main/appsForFile.ts'
+    writeFileSync(options.debtPath, JSON.stringify({ version: 1, baseCommit: '405f3f60ee6413b5a8cfc1fffb8f623a42282b54', files: {
+      [legacyPath]: [{ identity: '0c6a84cdd20119edd452859e7f4346c401d433c2cc5b0f27331dc354286bd7fe' }],
+    } }))
+    writeFileSync(legacy, 'function openPathWith(){ return {error: `open exited ${code}`} }')
+    assert.deepEqual(checkSources(undefined, options).errors, [])
+    writeFileSync(legacy, 'function openPathWith(){ return [{error: `open exited ${code}`},{error: `open exited ${code}`}] }')
+    assert.equal(checkSources(undefined, options).errors.length, 1)
+    assert.throws(() => checkSources('missing-base', options))
+  } finally {
+    if (previous === undefined) delete process.env.I18N_BASE_REF
+    else process.env.I18N_BASE_REF = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('real Git fixture covers staged, unstaged, untracked, missing refs and debt tightening', () => {
   const root = mkdtempSync(join(tmpdir(), 'scholarseed-i18n-git-'))
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()

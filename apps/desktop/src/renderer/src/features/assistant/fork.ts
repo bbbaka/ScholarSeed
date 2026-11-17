@@ -1,5 +1,6 @@
 import type { ActivityRow } from '../../activity.ts'
 import type { NavigationSession } from '../../api.ts'
+import type { ConvItem, TurnOutcome } from '../../model.ts'
 
 export const FORK_ORIGIN_STATUSES = [
   'available',
@@ -94,4 +95,33 @@ export function forkBoundaryIndex(
     if (inherited) boundary = index + 1
   })
   return boundary
+}
+
+export function editableForkAnchors(
+  items: readonly ConvItem[],
+  outcomes: Readonly<Record<string, TurnOutcome>>
+): Map<string, string> {
+  const anchors = new Map<string, string>()
+  const seen = new Set<string>()
+  let previousTurnId: string | undefined
+  for (const item of items) {
+    const turnId = item.turnId
+    if (!turnId || seen.has(turnId)) continue
+    if (
+      previousTurnId &&
+      outcomes[previousTurnId] === 'completed' &&
+      item.kind === 'user' &&
+      item.itemId &&
+      item.text.trim() &&
+      !item.displayMessage &&
+      !item.cancelled &&
+      !item.steer &&
+      !item.refs?.length
+    ) {
+      anchors.set(item.itemId, previousTurnId)
+    }
+    seen.add(turnId)
+    previousTurnId = turnId
+  }
+  return anchors
 }

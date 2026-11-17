@@ -2076,6 +2076,147 @@ test(
 )
 
 test(
+  'opens a strict native fork and scopes the send intent to the child draft',
+  { timeout: 60_000 },
+  async () => {
+    const requests: unknown[] = []
+    const turnSubmissions: string[] = []
+    await fixture(
+      async (page) => {
+        const rejected = await page.evaluate(async () => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          probe.patch({
+            activeSession: 'source',
+            sessions: [{ id: 'source', title: 'Parent', status: 'dormant' }],
+            collapsedSessionIds: { source: true },
+            threads: {
+              source: {
+                id: 'source',
+                title: 'Parent',
+                sessionId: 'source',
+                lastSeq: 0,
+                conversation: [
+                  { kind: 'user', text: 'first prompt', turnId: 'previous-turn', itemId: 'first' },
+                  {
+                    kind: 'agent',
+                    text: 'first answer',
+                    turnId: 'previous-turn',
+                    itemId: 'answer',
+                  },
+                  { kind: 'user', text: 'second prompt', turnId: 'edited-turn', itemId: 'second' },
+                  { kind: 'user', text: 'third prompt', turnId: 'last-turn', itemId: 'third' },
+                ],
+                turnOutcomes: {
+                  'previous-turn': 'completed',
+                  'edited-turn': 'completed',
+                  'last-turn': 'completed',
+                },
+              },
+            },
+          })
+          probe.draft('original unsent draft')
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+          return probe.forkSession('source', undefined, 'no anchor')
+        })
+        assert.equal(rejected, false)
+        const pencils = page.getByTestId('message-edit-fork')
+        await expect(pencils).toHaveCount(2)
+        await page.evaluate(() => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          const source = probe.state.threads.source
+          probe.patch({ threads: { source: { ...source, running: true } } })
+        })
+        await expect(pencils).toHaveCount(0)
+        await page.evaluate(() => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          const source = probe.state.threads.source
+          probe.patch({ threads: { source: { ...source, running: false } } })
+        })
+        await expect(pencils).toHaveCount(2)
+        const pencil = pencils.last()
+        await pencil.focus()
+        await pencil.press('Enter')
+        const revision = page.getByTestId('message-revision-editor')
+        const editor = revision.getByRole('textbox', { name: '在新分支中编辑' })
+        await expect(editor).toBeFocused()
+        await expect(editor).toHaveValue('third prompt')
+        await expect(revision.locator('input[type=file]')).toHaveCount(0)
+        await editor.fill('discarded draft')
+        await editor.press('Escape')
+        await expect(editor).toHaveCount(0)
+        await expect(pencil).toBeFocused()
+        await expect(
+          page.locator('[data-conversation-search-text]').filter({ hasText: 'third prompt' })
+        ).toHaveCount(1)
+        assert.deepEqual(requests, [])
+        await pencil.press('Enter')
+        await editor.fill('edited prompt')
+        await revision.getByRole('button', { name: '在新分支发送', exact: true }).click()
+        await expect
+          .poll(() =>
+            page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeSession)
+          )
+          .toBe('child')
+        const result = await page.evaluate(async () => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+          const child = {
+            id: probe.state.activeSession,
+            draft: probe.draft(),
+            collapsed: probe.state.collapsedSessionIds.source,
+            submitTarget: probe.state.composerSubmitRequested?.sessionId,
+          }
+          probe.openSession('source')
+          await frame()
+          const source = probe.draft()
+          probe.openSession('child')
+          await frame()
+          return {
+            child,
+            source,
+            restoredChild: probe.draft(),
+            submitAfterSwitch: probe.state.composerSubmitRequested,
+          }
+        })
+        assert.deepEqual(result, {
+          child: { id: 'child', draft: 'edited prompt', collapsed: false, submitTarget: 'child' },
+          source: 'original unsent draft',
+          restoredChild: 'edited prompt',
+          submitAfterSwitch: false,
+        })
+        assert.deepEqual(requests, [
+          { fork_session_id: 'source', fork_turn_id: 'edited-turn', require_native_fork: true },
+        ])
+        assert.deepEqual(turnSubmissions, [])
+      },
+      async (page) => {
+        await page.addInitScript(() => Reflect.set(window, 'forkConversationFixture', true))
+        page.on('request', (request) => {
+          if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/turns'))
+            turnSubmissions.push(request.url())
+        })
+        await page.route('**/api/serve/sessions/open', async (route) => {
+          requests.push(route.request().postDataJSON())
+          await route.fulfill({
+            json: {
+              session_id: 'child',
+              display_parent_session_id: 'source',
+              title: 'Branch',
+              project_path: null,
+              runtime_id: 'codex',
+              running: false,
+              active_turn_id: null,
+              uncertain_operations: [],
+              unknown_outcome: false,
+            },
+          })
+        })
+      }
+    )
+  }
+)
+
+test(
   'failed fork preserves selection and collapsed display parent',
   { timeout: 60_000 },
   async () => {

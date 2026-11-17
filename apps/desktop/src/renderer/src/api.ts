@@ -684,6 +684,7 @@ export interface SessionOpenOptions {
   resumeSessionId?: string
   forkSessionId?: string
   forkTurnId?: string
+  requireNativeFork?: boolean
   modelId?: string
   reasoningEffort?: string
   permissionMode?: string
@@ -701,6 +702,7 @@ export function buildSessionOpenRequest(opts: SessionOpenOptions = {}): Record<s
   if (opts.resumeSessionId) request.resume_session_id = opts.resumeSessionId
   if (opts.forkSessionId) request.fork_session_id = opts.forkSessionId
   if (opts.forkTurnId) request.fork_turn_id = opts.forkTurnId
+  if (opts.requireNativeFork) request.require_native_fork = true
   if (opts.modelId) request.model_id = opts.modelId
   if (opts.prepareRuntime) {
     request.prepare_runtime = true

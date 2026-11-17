@@ -2449,15 +2449,27 @@ export function Composer({
   const draftSubmissionConsumed = React.useRef(false)
   React.useEffect(() => {
     if (editing) return
-    if (!state.composerSubmitRequested) {
+    const request = state.composerSubmitRequested
+    if (!request) {
       draftSubmissionConsumed.current = false
+      return
+    }
+    const scoped = typeof request === 'object'
+    if (
+      scoped &&
+      (request.sessionId !== state.activeSession ||
+        request.draftRevision !== composerDraft.getRevision() ||
+        request.expiresAt <= Date.now() ||
+        thread.resumeState === 'failed')
+    ) {
+      set({ composerSubmitRequested: false })
       return
     }
     if (
       !canConsumeDraftSubmission({
         surface,
         view: state.mainView,
-        ready: canSend && !submittingMessage,
+        ready: canSend && !submittingMessage && (!scoped || (!running && !queuedMessages.length)),
         consumed: draftSubmissionConsumed.current,
         obscured: nonConversationSurfaceOpen,
       })
@@ -2465,7 +2477,8 @@ export function Composer({
       return
     draftSubmissionConsumed.current = true
     set({ composerSubmitRequested: false })
-    void submit()
+    if (scoped) void submit(composerDraft.getSnapshot(), [])
+    else void submit()
   })
 
   const composerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {

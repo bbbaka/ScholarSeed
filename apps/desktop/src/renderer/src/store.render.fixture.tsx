@@ -8,6 +8,7 @@ import { resources } from '../../localization/resources'
 import type { RendererPreferences } from '../../preferences'
 import { Button, ToastProvider, Toaster } from './components/ui'
 import { SessionDropdownMenu } from './components/business/SessionContextMenu'
+import { Stream } from './components/business/Stream'
 import { StoreProvider, useApp, type Store } from './store'
 import { effectiveShortcutBindings } from './shortcuts'
 import { ErrorBoundary } from './app/Error'
@@ -53,7 +54,7 @@ const probe = {
   openDraftSession: (...args: Parameters<Store['act']['openDraftSession']>) =>
     flushSync(() => store.act.openDraftSession(...args)),
   loadContext: (id: string) => store.act.loadAiContext(id),
-  forkSession: (id: string, turnId?: string) => store.act.forkSession(id, turnId),
+  forkSession: (...args: Parameters<Store['act']['forkSession']>) => store.act.forkSession(...args),
   draft: (text?: string) => {
     if (text !== undefined) store.composerDraft.set(text)
     return store.composerDraft.getSnapshot()
@@ -150,6 +151,11 @@ function Probe(): React.JSX.Element {
       <SessionDropdownMenu target={{ sessionId: 'other', title: 'Other', inProject: false }}>
         <Button>任务菜单</Button>
       </SessionDropdownMenu>
+      {Reflect.get(window, 'forkConversationFixture') === true && (
+        <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
+          <Stream home />
+        </DocumentWorkspaceContext.Provider>
+      )}
       <Toaster />
     </>
   )

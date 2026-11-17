@@ -399,6 +399,25 @@ class ForkTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(self.service._copy_fork_workspace(self.origin(), self.root / "child"))
 
+    def test_message_edit_native_fork_requires_an_idle_source(self) -> None:
+        self.shared_source()
+        self.append("done", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
+        request = {
+            "fork_session_id": "source",
+            "fork_turn_id": "done",
+            "require_native_fork": True,
+        }
+        with patch.object(self.service, "_create", new_callable=AsyncMock) as create:
+            create.return_value = ({"session_id": "child"}, 200)
+            self.assertEqual(self.open(request)[1], 409)
+            create.assert_not_called()
+            self.service._sessions["source"].running = False
+            self.assertEqual(self.open(request)[1], 200)
+            origin = create.call_args.kwargs["fork_origin"]
+            self.service._sessions["source"].running = True
+            with self.assertRaises(ValueError):
+                asyncio.run(self.service._copy_fork_workspace(origin, self.root))
+
     def test_running_shared_source_rejects_incomplete_and_non_native_origins(self) -> None:
         self.shared_source()
         self.append("done", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
@@ -813,6 +832,39 @@ class ForkTests(unittest.TestCase):
                     self.open({"fork_session_id": "source", "fork_turn_id": "done"})[0]["error"],
                     SESSION_FORK_SOURCE_CHANGED,
                 )
+            self.assertEqual(create.call_count, 1)
+
+    def test_native_only_fork_requires_an_anchor_and_uses_native_history(self) -> None:
+        terminal = self.append("done", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
+        portable = self.register("portable")
+        self.events.inherit_history("source", portable, terminal.product_seq)
+        with patch.object(self.service, "_create", new_callable=AsyncMock) as create:
+            create.return_value = ({"session_id": "child"}, 200)
+            self.assertEqual(
+                self.open({"fork_session_id": "source", "require_native_fork": True})[0]["error"],
+                SESSION_FORK_INVALID,
+            )
+            self.assertEqual(
+                self.open(
+                    {
+                        "fork_session_id": "source",
+                        "fork_turn_id": "done",
+                        "require_native_fork": True,
+                    }
+                )[1],
+                200,
+            )
+            self.assertTrue(create.call_args.kwargs["fork_origin"].native_fork)
+            self.assertEqual(
+                self.open(
+                    {
+                        "fork_session_id": "portable",
+                        "fork_turn_id": "done",
+                        "require_native_fork": True,
+                    }
+                )[1],
+                409,
+            )
             self.assertEqual(create.call_count, 1)
 
     def test_child_fork_keeps_actual_source_and_shared_display_parent(self) -> None:

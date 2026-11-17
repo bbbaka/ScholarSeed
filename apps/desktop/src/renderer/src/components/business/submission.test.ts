@@ -13,7 +13,12 @@ test('the real composer effect waits for readiness and submits a project draft o
     source.indexOf('const composerKeyDown =')
   )}}`
   const consumed = { current: false }
-  const state = { mainView: 'skills', composerSubmitRequested: true }
+  const state: {
+    mainView: string
+    activeSession: string
+    composerSubmitRequested:
+      boolean | { sessionId: string; draftRevision: number; expiresAt: number }
+  } = { mainView: 'skills', activeSession: 'child', composerSubmitRequested: true }
   let submissions = 0
   const context = {
     React: { useRef: () => consumed, useEffect: (callback: () => void) => callback() },
@@ -23,6 +28,10 @@ test('the real composer effect waits for readiness and submits a project draft o
     canSend: true,
     submittingMessage: false,
     nonConversationSurfaceOpen: false,
+    thread: { resumeState: 'ready' },
+    running: false,
+    queuedMessages: [],
+    composerDraft: { getSnapshot: () => 'edited prompt', getRevision: () => 5 },
     canConsumeDraftSubmission,
     set: (patch: object) => Object.assign(state, patch),
     submit: () => {
@@ -47,6 +56,24 @@ test('the real composer effect waits for readiness and submits a project draft o
   runInNewContext(effect, context)
   runInNewContext(effect, context)
   assert.equal(submissions, 1)
+  assert.equal(state.composerSubmitRequested, false)
+  runInNewContext(effect, context)
+  const request = { sessionId: 'child', draftRevision: 5, expiresAt: Date.now() + 60_000 }
+  state.composerSubmitRequested = { ...request, sessionId: 'another task' }
+  runInNewContext(effect, context)
+  assert.equal(submissions, 1)
+  state.composerSubmitRequested = { ...request, draftRevision: 4 }
+  runInNewContext(effect, context)
+  assert.equal(submissions, 1)
+  state.composerSubmitRequested = request
+  context.canSend = false
+  runInNewContext(effect, context)
+  assert.equal(submissions, 1)
+  assert.equal(state.composerSubmitRequested, request)
+  context.canSend = true
+  runInNewContext(effect, context)
+  runInNewContext(effect, context)
+  assert.equal(submissions, 2)
   assert.equal(state.composerSubmitRequested, false)
 })
 

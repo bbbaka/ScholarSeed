@@ -12,7 +12,6 @@ import { CANVAS_SLOT } from '../../../../../../../packages/ui/canvas'
 import { MessageRevisionContext, WebNavigationContext } from '../../contracts/navigation'
 import { MessageRevisionEditor } from './Revision'
 import { upsertSessionNode } from '../../tree'
-import { Pencil } from 'lucide-react'
 import { LiteratureAuthorizationCard } from '../../features/literature/Scope'
 import { fulltextSelection } from '../../features/literature/interaction'
 import {
@@ -36,7 +35,7 @@ import { isSelectionReference, selectionReferenceGroups } from '../../features/a
 import { SelectionReference } from './Conversation'
 import { ForkOriginDivider } from '../../features/assistant/Branch'
 import { useForkOrigin } from '../../features/assistant/origin'
-import { forkBoundaryIndex } from '../../features/assistant/fork'
+import { editableForkAnchors, forkBoundaryIndex } from '../../features/assistant/fork'
 import { markInteractionAttentionRead } from '../../features/assistant/attention'
 import { deliveryLabel } from '../../delivery'
 import {
@@ -67,6 +66,7 @@ import {
   ChevronRight,
   Copy,
   GitBranch,
+  Pencil,
   TriangleAlert,
   CircleX,
   X,
@@ -546,6 +546,25 @@ function useScrollControlPlacement(
   return target && visible ? placement : null
 }
 
+function canForkFromUserMessage(thread: Thread, launching: boolean): boolean {
+  return Boolean(
+    thread.sessionId &&
+    !launching &&
+    !thread.readOnly &&
+    !thread.terminated &&
+    !thread.running &&
+    thread.status !== 'running' &&
+    thread.status !== 'waiting' &&
+    thread.resumeState !== 'pending' &&
+    thread.resumeState !== 'failed' &&
+    !thread.interrupting &&
+    !thread.recoveryPending &&
+    !thread.recoveryBlocked &&
+    !thread.queuedMessages?.length &&
+    !pendingHilItems(thread.conversation).length
+  )
+}
+
 export function Stream({
   home = false,
   onOpenDelivery,
@@ -614,6 +633,13 @@ export function Stream({
   const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
     .filter(([, outcome]) => outcome === 'running')
     .at(-1)?.[0]
+  const messageForkAnchors = useMemo(
+    () =>
+      canForkFromUserMessage(thread, Boolean(state.turnLaunch))
+        ? editableForkAnchors(thread.conversation, thread.turnOutcomes ?? {})
+        : null,
+    [thread, state.turnLaunch]
+  )
   const rows = activityRows(presented, thread.turnOutcomes, postDeliveryCardTypes)
   const navigationTurns = conversationTurns(
     presented.map((item) =>
@@ -1505,6 +1531,11 @@ export function Stream({
                     >
                       <Item
                         item={row.item}
+                        messageForkAnchor={
+                          row.item.kind === 'user' && row.item.itemId
+                            ? messageForkAnchors?.get(row.item.itemId)
+                            : undefined
+                        }
                         skillNames={skillNames}
                         awaitingConfirmation={pendingTurnIds.has(row.item.turnId)}
                         latestAgent={index === latestAgentRow}
@@ -1933,6 +1964,7 @@ function Empty({ home = false }: { home?: boolean }): React.JSX.Element {
 
 function Item({
   item,
+  messageForkAnchor,
   skillNames,
   awaitingConfirmation,
   latestAgent,
@@ -1946,6 +1978,7 @@ function Item({
   onOpenDelivery,
 }: {
   item: ConvItem
+  messageForkAnchor?: string
   skillNames: SkillNames
   awaitingConfirmation: boolean
   latestAgent: boolean
@@ -1972,7 +2005,9 @@ function Item({
     case 'user':
       return (
         <UserBubble
+          key={activeThread(state).sessionId}
           item={item}
+          forkAnchor={messageForkAnchor}
           skillNames={skillNames}
           running={running}
           onRewind={onRewind}
@@ -6478,12 +6513,14 @@ function Reentry({ item }: { item: Extract<ConvItem, { kind: 'reentry' }> }): Re
 
 function UserBubble({
   item,
+  forkAnchor,
   skillNames,
   running,
   onRewind,
   sentAt,
 }: {
   item: Extract<ConvItem, { kind: 'user' }>
+  forkAnchor?: string
   skillNames: SkillNames
   running: boolean
   onRewind: (anchor: number) => Promise<string | null>
@@ -6498,19 +6535,43 @@ function UserBubble({
     ? renderFeedback(localization, item.displayMessage)
     : item.text
   const hasMessageText = Boolean(displayText.trim())
-  const { state, act, set } = useApp()
+  const { state, act, set, getSnapshot } = useApp()
   const thread = activeThread(state)
   const firstUser = thread.conversation.find((entry) => entry.kind === 'user')
-  const canEdit = Boolean(
-    reviseMessage &&
-    thread.sessionId &&
-    !thread.readOnly &&
-    !running &&
-    !item.steer &&
-    item.itemId &&
-    item.turnId &&
-    firstUser?.turnId !== item.turnId
-  )
+  const canEdit = reviseMessage
+    ? Boolean(
+        thread.sessionId &&
+        !thread.readOnly &&
+        !running &&
+        !item.steer &&
+        item.itemId &&
+        item.turnId &&
+        firstUser?.turnId !== item.turnId
+      )
+    : Boolean(forkAnchor)
+  const editLabel = reviseMessage ? conversationText('revision.edit') : t('stream.editMessage')
+  const editTrigger = useRef<HTMLButtonElement>(null)
+  const cancelEdit = (): void => {
+    setEditing(false)
+    requestAnimationFrame(() => editTrigger.current?.focus())
+  }
+  const createEditedBranch = async (draft: string): Promise<void> => {
+    const current = getSnapshot()
+    const owner = activeThread(current)
+    if (
+      !forkAnchor ||
+      !item.itemId ||
+      !owner.sessionId ||
+      owner.sessionId !== thread.sessionId ||
+      !canForkFromUserMessage(owner, Boolean(current.turnLaunch)) ||
+      editableForkAnchors(owner.conversation, owner.turnOutcomes ?? {}).get(item.itemId) !==
+        forkAnchor
+    )
+      throw new Error(t('stream.forkFailed'))
+    if (!(await act.forkSession(owner.sessionId, forkAnchor, draft)))
+      throw new Error(t('stream.forkFailed'))
+    setEditing(false)
+  }
   const displayRefs = (item.refs ?? []).map((reference) =>
     reference.type === 'assistant_context' &&
     reference.kind === 'file' &&
@@ -6651,10 +6712,14 @@ function UserBubble({
     return (
       <MessageRevisionEditor
         text={item.text}
-        references={item.refs ?? []}
-        onCancel={() => setEditing(false)}
+        references={reviseMessage ? (item.refs ?? []) : undefined}
+        onCancel={cancelEdit}
         onSubmit={async (text, references, requestId) => {
-          if (!reviseMessage || !thread.sessionId || !item.itemId || !item.turnId) return
+          if (!reviseMessage) {
+            await createEditedBranch(text)
+            return
+          }
+          if (!thread.sessionId || !item.itemId || !item.turnId) return
           const result = await reviseMessage({
             sessionId: thread.sessionId,
             itemId: item.itemId,
@@ -7021,13 +7086,18 @@ function UserBubble({
                 <Copy size={14} />
               </CopyButton>
               {canEdit && (
-                <IconButton
-                  size="xs"
-                  variant="ghost"
-                  label={conversationText('revision.edit')}
-                  icon={<Pencil size={14} />}
-                  onClick={() => setEditing(true)}
-                />
+                <Tooltip content={editLabel} portalled>
+                  <IconButton
+                    ref={editTrigger}
+                    type="button"
+                    size="xs"
+                    variant={reviseMessage ? 'ghost' : 'ghostIcon'}
+                    label={editLabel}
+                    icon={<Pencil size={14} />}
+                    data-testid={reviseMessage ? undefined : 'message-edit-fork'}
+                    onClick={() => setEditing(true)}
+                  />
+                </Tooltip>
               )}
             </MessageActions>
           )}

@@ -337,6 +337,7 @@ MCP_REQUEST_ID_MAX_LENGTH = 128
 MCP_REQUEST_ID_PUNCTUATION = frozenset("-_.:")
 SESSION_RECOVERY_HIL_KEY_PREFIX = "service:recovery:hil"
 SESSION_RECOVERY_TURN_KEY_PREFIX = "service:recovery:turn"
+SESSION_REQUIRE_NATIVE_FORK_FIELD = "require_native_fork"
 SESSION_OPEN_FIELDS = frozenset(
     {
         "model_id",
@@ -346,10 +347,13 @@ SESSION_OPEN_FIELDS = frozenset(
         "resume_session_id",
         "fork_session_id",
         "fork_turn_id",
+        SESSION_REQUIRE_NATIVE_FORK_FIELD,
         SESSION_REQUIRED_CAPABILITIES_FIELD,
     }
 )
-SESSION_FORK_FIELDS = frozenset({"fork_session_id", "fork_turn_id"})
+SESSION_FORK_FIELDS = frozenset(
+    {"fork_session_id", "fork_turn_id", SESSION_REQUIRE_NATIVE_FORK_FIELD}
+)
 SESSION_FORK_INVALID = "session_fork_invalid"
 SESSION_FORK_UNAVAILABLE = "session_fork_unavailable"
 SESSION_FORK_INCOMPLETE = "session_fork_turn_incomplete"
@@ -374,6 +378,7 @@ class SessionForkOrigin:
     native_fork: bool
     source: SessionCatalogRecord
     binding: RuntimeBinding
+    require_idle: bool = False
 
 
 PRODUCT_PERMISSION_MODES = (
@@ -841,7 +846,18 @@ class SessionService:
         if SESSION_FORK_FIELDS.intersection(body) and (
             "fork_session_id" not in body
             or not set(body).issubset(SESSION_FORK_FIELDS)
-            or any(not isinstance(body.get(name), str) or not body[name].strip() for name in body)
+            or any(
+                not isinstance(body.get(name), str) or not body[name].strip()
+                for name in body
+                if name != SESSION_REQUIRE_NATIVE_FORK_FIELD
+            )
+            or (
+                SESSION_REQUIRE_NATIVE_FORK_FIELD in body
+                and (
+                    body[SESSION_REQUIRE_NATIVE_FORK_FIELD] is not True
+                    or "fork_turn_id" not in body
+                )
+            )
         ):
             return {"ok": False, "error": SESSION_FORK_INVALID}, HTTP_BAD_REQUEST
         if resume_id:
@@ -949,6 +965,11 @@ class SessionService:
                     SESSION_FORK_NATIVE_FIELD, bool(source_origin.payload.get("source_turn_id"))
                 )
             )
+            require_native = body.get(SESSION_REQUIRE_NATIVE_FORK_FIELD) is True
+            if require_native and not native_fork:
+                return {"ok": False, "error": SESSION_FORK_UNAVAILABLE}, HTTP_CONFLICT
+            if require_native and self._fork_source_busy(record, source_live):
+                return {"ok": False, "error": SESSION_RUNNING_ERROR}, HTTP_CONFLICT
             if (
                 source_live is not None
                 and source_live.running
@@ -963,6 +984,7 @@ class SessionService:
                 native_fork,
                 record,
                 binding,
+                require_idle=require_native,
             )
             state = self._model_state(source_id)
             activation = self._access.activation(source_id)
@@ -984,10 +1006,22 @@ class SessionService:
             display_parent_session_id=record.display_parent_session_id or source_id,
         )
 
+    def _fork_source_busy(self, source: SessionCatalogRecord, live: LiveSession | None) -> bool:
+        return (
+            source.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
+            or (live is not None and live.running)
+            or bool(self._access.queued_messages(source.session_id))
+            or bool(self._access.pending_hil(source.session_id))
+        )
+
     def _validate_fork_origin(self, origin: SessionForkOrigin) -> SessionCatalogRecord:
         source = self._access.get(origin.session_id)
         if source is None or source.archived:
             raise ValueError(SESSION_FORK_UNAVAILABLE)
+        if origin.require_idle and self._fork_source_busy(
+            source, self._sessions.get(origin.session_id)
+        ):
+            raise ValueError(SESSION_RUNNING_ERROR)
         if (
             source.principal_id != origin.source.principal_id
             or source.runtime_id != origin.source.runtime_id

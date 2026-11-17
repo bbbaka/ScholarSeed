@@ -253,7 +253,7 @@ declare module 'i18next' {
             "previous": "上一个（Shift+Enter）",
             "next": "下一个（Enter）",
             "close": "关闭搜索（Esc）"
-        };
+        },
         "externalRead": {
             "title": "读取项目外文件",
             "description": "文件：{{path}}\n操作：只读。范围：仅此文件、仅当前任务；不授权父目录、不写入或永久关联。",
@@ -2028,6 +2028,9 @@ declare module 'i18next' {
             "rewind": "回退",
             "copyReply": "复制消息",
             "forkTask": "创建分支",
+            "editMessage": "在新分支中编辑",
+            "editBranchHint": "修改内容将在新分支直接发送。原对话保留，文件和外部操作不会回滚。",
+            "editBranchSend": "在新分支发送",
             "forkFailed": "创建分支失败，原会话未改变。请检查运行时状态后重试。",
             "reconnect": "重新连接",
             "continueUnconfirmed": "Service 未确认继续操作。",
@@ -4990,7 +4993,7 @@ declare module 'i18next' {
                 "completeReferences": "共 {{count}} 条参考文献，已全部列出。",
                 "disclaimer": "演示数据：沿用所提供 HTML 的 18 篇论文及推荐顺序，非实时热度榜。要点为编辑整理；推荐不会自动加入文献库。"
             }
-        };
+        },
         "searchStart": {
             "title": "确认文献检索",
             "question": "要开始文献检索吗？查找论文、筛选候选文献和阅读已授权的全文可能需要一些时间。",

@@ -611,7 +611,7 @@ export interface AppState {
   /** Product session workdir being browsed; null selects the global workspace. */
   workspaceFilesSessionId: string | null
   composerText: string
-  composerSubmitRequested: boolean
+  composerSubmitRequested: boolean | { sessionId: string; draftRevision: number; expiresAt: number }
   composerTaskType: '' | ProductTaskType
   composerRefs: ComposerReference[]
   composerReferenceOrder?: string[]
@@ -1017,6 +1017,8 @@ const SURFACE_RESET: Partial<AppState> = {
   sessionRename: null,
 }
 
+const FORK_DRAFT_SEND_TIMEOUT_MS = 30_000
+
 const COMPOSER_RESET: Partial<AppState> = {
   draftModelId: null,
   composerSubmitRequested: false,
@@ -1355,9 +1357,10 @@ export interface Actions extends AssistantIngress {
   openSession: (
     id: string,
     focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>,
-    intent?: SessionOpenIntent
+    intent?: SessionOpenIntent,
+    sendForkDraft?: boolean
   ) => void
-  forkSession: (sessionId: string, turnId?: string) => Promise<boolean>
+  forkSession: (sessionId: string, turnId?: string, draft?: string) => Promise<boolean>
   openPanelSession: (
     node: SessionNode,
     focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>
@@ -3205,12 +3208,26 @@ export function StoreProvider({
           workspaceFilesSessionId: null,
         }))
       },
-      forkSession: async (sessionId, turnId) => {
+      forkSession: async (sessionId, turnId, draft) => {
         if (!sessionId || pendingForks.current.has(sessionId)) return false
+        if (
+          draft !== undefined &&
+          (!turnId || !draft.trim() || stateRef.current.activeSession !== sessionId)
+        )
+          return false
         pendingForks.current.add(sessionId)
         try {
-          const opened = await openSession({ forkSessionId: sessionId, forkTurnId: turnId })
+          const opened = await openSession({
+            forkSessionId: sessionId,
+            forkTurnId: turnId,
+            requireNativeFork: draft !== undefined,
+          })
           if (!opened?.session_id || opened.session_id === sessionId) return false
+          if (draft !== undefined)
+            sessionDrafts.current!.set(composerDraftKey(opened.session_id, null)!, {
+              text: draft,
+              refs: [],
+            })
           setState((current) => ({
             ...current,
             sessions: upsertSessionNode(current.sessions, {
@@ -3227,7 +3244,13 @@ export function StoreProvider({
               ? { ...current.collapsedSessionIds, [opened.display_parent_session_id]: false }
               : current.collapsedSessionIds,
           }))
-          actRef.current.openSession(opened.session_id)
+          if (draft === undefined || stateRef.current.activeSession === sessionId)
+            actRef.current.openSession(
+              opened.session_id,
+              undefined,
+              'assistant',
+              draft !== undefined
+            )
           return true
         } catch {
           return false
@@ -3235,12 +3258,20 @@ export function StoreProvider({
           pendingForks.current.delete(sessionId)
         }
       },
-      openSession: (id, focus, intent = 'assistant') => {
+      openSession: (id, focus, intent = 'assistant', sendForkDraft = false) => {
         const previous = stateRef.current.activeSession
         const switching = previous !== id || stateRef.current.threads[id]?.readOnly
         if (switching) rememberSessionDraft(true)
         const draft = sessionDrafts.current!.get(composerDraftKey(id, null)!)
         if (switching) composerDraft.current!.set(draft?.text ?? '')
+        const submitRequest =
+          switching && sendForkDraft && draft?.text.trim()
+            ? {
+                sessionId: id,
+                draftRevision: composerDraft.current!.getRevision(),
+                expiresAt: Date.now() + FORK_DRAFT_SEND_TIMEOUT_MS,
+              }
+            : false
         setState((current) => {
           current = { ...current, archivedSession: null }
           const node = findSessionNode(current.sessions, id)
@@ -3325,6 +3356,7 @@ export function StoreProvider({
             ...current,
             ...COMPOSER_RESET,
             activeSession: id,
+            composerSubmitRequested: submitRequest,
             composerRefs: draft?.refs ?? [],
             mainView: assistantSessionView(current),
             aiPanel: {

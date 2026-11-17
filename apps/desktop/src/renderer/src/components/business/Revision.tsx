@@ -17,14 +17,16 @@ export function MessageRevisionEditor({
   onSubmit,
 }: {
   text: string
-  references: MessageReference[]
+  references?: MessageReference[]
   onCancel: () => void
   onSubmit: (text: string, references: MessageReference[], requestId: string) => Promise<void>
 }): React.JSX.Element {
   const { t } = useTranslation('conversation')
+  const { t: componentText } = useTranslation('components')
+  const allowAttachments = references !== undefined
   const [draft] = useState(() => createComposerDraftStore(text))
   const value = useSyncExternalStore(draft.subscribe, draft.getSnapshot, draft.getSnapshot)
-  const [attachments, setAttachments] = useState(() => [...references])
+  const [attachments, setAttachments] = useState(() => [...(references ?? [])])
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -60,7 +62,7 @@ export function MessageRevisionEditor({
       className="mb-[var(--vds-space-6)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]"
       data-testid="message-revision-editor"
       onKeyDown={(event) => {
-        if (event.key === 'Escape' && !submitting.current) {
+        if (event.key === 'Escape' && !event.nativeEvent.isComposing && !submitting.current) {
           event.preventDefault()
           event.stopPropagation()
           onCancel()
@@ -72,7 +74,7 @@ export function MessageRevisionEditor({
         inputRef={inputRef}
         maxHeight={REVISION_EDITOR_MAX_HEIGHT}
         disabled={pending}
-        aria-label={t('revision.input')}
+        aria-label={allowAttachments ? t('revision.input') : componentText('stream.editMessage')}
         references={attachments.map((reference, index) => ({
           key: `${reference.type}:${reference.id}:${index}`,
           content: (
@@ -108,48 +110,61 @@ export function MessageRevisionEditor({
           }
         }}
       />
-      {failed && <Alert className="mt-[var(--vds-space-3)]">{t('revision.failed')}</Alert>}
-      <Input
-        ref={fileRef}
-        type="file"
-        multiple
-        className="hidden"
-        disabled={pending}
-        aria-label={t('revision.attach')}
-        onChange={(event) => {
-          const files = Array.from(event.target.files ?? [])
-          setAttachments((current) => [
-            ...current,
-            ...files
-              .map((file) => {
-                const path = window.scholarseed.pathForFile?.(file) || file.name
-                return {
-                  type: 'file',
-                  id: path,
-                  title: file.name,
-                  path,
-                  size: file.size,
-                  mediaType: file.type,
-                }
-              })
-              .filter(
-                (file) =>
-                  !current.some(
-                    (reference) => reference.type === file.type && reference.id === file.id
-                  )
-              ),
-          ])
-          event.target.value = ''
-        }}
-      />
-      <div className="mt-[var(--vds-space-4)] flex flex-wrap items-center gap-[var(--vds-space-2)]">
-        <IconButton
-          label={t('revision.attach')}
-          icon={<Plus size={20} />}
-          variant="ghost"
+      {!allowAttachments && (
+        <p className="mt-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]">
+          {componentText('stream.editBranchHint')}
+        </p>
+      )}
+      {failed && (
+        <Alert className="mt-[var(--vds-space-3)]">
+          {allowAttachments ? t('revision.failed') : componentText('stream.forkFailed')}
+        </Alert>
+      )}
+      {allowAttachments && (
+        <Input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="hidden"
           disabled={pending}
-          onClick={() => fileRef.current?.click()}
+          aria-label={t('revision.attach')}
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? [])
+            setAttachments((current) => [
+              ...current,
+              ...files
+                .map((file) => {
+                  const path = window.scholarseed.pathForFile?.(file) || file.name
+                  return {
+                    type: 'file',
+                    id: path,
+                    title: file.name,
+                    path,
+                    size: file.size,
+                    mediaType: file.type,
+                  }
+                })
+                .filter(
+                  (file) =>
+                    !current.some(
+                      (reference) => reference.type === file.type && reference.id === file.id
+                    )
+                ),
+            ])
+            event.target.value = ''
+          }}
         />
+      )}
+      <div className="mt-[var(--vds-space-4)] flex flex-wrap items-center gap-[var(--vds-space-2)]">
+        {allowAttachments && (
+          <IconButton
+            label={t('revision.attach')}
+            icon={<Plus size={20} />}
+            variant="ghost"
+            disabled={pending}
+            onClick={() => fileRef.current?.click()}
+          />
+        )}
         <div className="ml-auto flex flex-wrap gap-[var(--vds-space-2)]">
           <Button variant="secondary" disabled={pending} onClick={onCancel}>
             {t('revision.cancel')}
@@ -159,7 +174,11 @@ export function MessageRevisionEditor({
             disabled={pending || !value.trim()}
             onClick={() => void submit()}
           >
-            {t(pending ? 'revision.submitting' : 'revision.submit')}
+            {pending
+              ? t('revision.submitting')
+              : allowAttachments
+                ? t('revision.submit')
+                : componentText('stream.editBranchSend')}
           </Button>
         </div>
       </div>

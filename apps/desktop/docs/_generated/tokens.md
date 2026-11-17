@@ -1793,6 +1793,7 @@ Sources: `src/renderer/src/design/*.css` and the compatibility entry `src/render
 | `--vds-z-floating-panel` | `src/renderer/src/design/zindex.css` · `:root` | single |
 | `--vds-z-header` | `src/renderer/src/design/zindex.css` · `:root` | single |
 | `--vds-z-inline-flyout` | `src/renderer/src/design/zindex.css` · `:root` | single |
+| `--vds-z-landing-language-menu` | `src/renderer/src/design/zindex.css` · `:root` | single |
 | `--vds-z-loading` | `src/renderer/src/design/zindex.css` · `:root` | single |
 | `--vds-z-local-control` | `src/renderer/src/design/zindex.css` · `:root` | single |
 | `--vds-z-local-decoration` | `src/renderer/src/design/zindex.css` · `:root` | single |

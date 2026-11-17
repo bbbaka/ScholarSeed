@@ -1,5 +1,6 @@
 /** Static visual debt identities. Design values belong to design/, never page literals. */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +13,8 @@ const PREFIX = 'apps/desktop/src/renderer/src/'
 // Audited before the Page migration; never HEAD (committing must not forgive new debt).
 export const VISUAL_BASE = 'a0e89c828949f83168fcf3687e21380238b42565'
 const MAX_GIT_OUTPUT = 64 * 1024 * 1024
+const SNAPSHOT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'visualbaseline.json')
+const SNAPSHOT_SHA256 = 'b7d0a13ee824301f6622e92f6f669ac8ee77503727869fbe9a9330a2cab4234b'
 const EXCLUDED = /(?:\/design\/|\/assets\/|\/components\/examples\/|\/components\/primitive\/Iconfont\/download\/|\.test\.|\.fixture\.|\.d\.ts$)/
 const VISUAL_PROPERTY = /^(?:zIndex|z-index|gap|rowGap|columnGap|(?:row|column)-gap|padding(?:[A-Z][a-z]+|-[a-z]+)*|margin(?:[A-Z][a-z]+|-[a-z]+)*|(?:min|max)?(?:Width|Height)|(?:min-|max-)?(?:width|height)|font(?:Size|Weight|Family)|font-(?:size|weight|family)|lineHeight|line-height|letterSpacing|letter-spacing|border(?:TopLeft|TopRight|BottomLeft|BottomRight|StartStart|StartEnd|EndStart|EndEnd)?Radius|border-(?:(?:top|bottom)-(?:left|right)-|(?:start|end)-(?:start|end)-)?radius|boxShadow|box-shadow|opacity)$/
 const STRUCTURAL = /^(?:0(?:px|rem|em|%)?|auto|none|full|screen|svh|dvh|lvh|min|max|fit|100%|inherit|initial|unset|min-content|max-content|fit-content|\d+\/\d+)$/
@@ -25,7 +28,7 @@ const LAYER_TOKEN_SOURCE = resolve(ROOT, PREFIX, 'design/zindex.css')
 function git(args, root = ROOT) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: MAX_GIT_OUTPUT })
 }
-function candidates(paths) {
+export function visualCandidates(paths) {
   return [...new Set(paths)].filter((path) => path.startsWith(PREFIX) && /\.(?:tsx?|css)$/.test(path) && !EXCLUDED.test(path)).sort()
 }
 
@@ -78,7 +81,7 @@ export function visualFindings(source, filename = 'source.tsx') {
   const hits = []
   const add = (owner, kind, value, line) => hits.push({ identity: JSON.stringify([owner, kind, value]), kind, value, line })
   if (filename.endsWith('.css')) {
-    postcss.parse(source, { from: filename }).walkDecls((decl) => {
+    postcss.parse(source.replaceAll('\r\n', '\n'), { from: filename }).walkDecls((decl) => {
       if (!VISUAL_PROPERTY.test(decl.prop)) return
       const forbidden = decl.prop === 'z-index'
         ? decl.value !== 'auto' && !/^var\(--vds-[\w-]+\)$/.test(decl.value)
@@ -254,14 +257,71 @@ export function newVisualFindings(current, previous) {
   })
 }
 
+/** Bind the archived findings to the exact detector that produced them. */
+export function visualRulesFingerprint() {
+  const source = readFileSync(fileURLToPath(import.meta.url), 'utf8').replaceAll('\r\n', '\n')
+  const start = source.indexOf('const EXCLUDED = ')
+  const end = source.indexOf('export function layerTokenFindings(')
+  if (start < 0 || end <= start) throw new Error('visual detector source unavailable')
+  return createHash('sha256').update(source.slice(start, end)).update(ts.version).update(postcss().version).digest('hex')
+}
+
+function auditedSnapshot() {
+  const raw = readFileSync(SNAPSHOT_PATH, 'utf8').replaceAll('\r\n', '\n')
+  if (createHash('sha256').update(raw).digest('hex') !== SNAPSHOT_SHA256)
+    throw new Error('audited visual snapshot integrity check failed')
+  const snapshot = JSON.parse(raw)
+  if (snapshot.base !== VISUAL_BASE || snapshot.rules !== visualRulesFingerprint() ||
+      !snapshot.files || typeof snapshot.files !== 'object' || Array.isArray(snapshot.files))
+    throw new Error('audited visual snapshot does not match the baseline and detector')
+  return snapshot
+}
+
+/** Check both worktree and index against the exact audited historical findings. */
+export function visualSnapshotErrors({ root = ROOT } = {}) {
+  const snapshot = auditedSnapshot()
+  const files = visualCandidates(git(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', PREFIX], root).split('\0').filter(Boolean))
+  const entries = git(['ls-files', '--stage', '-z', '--', PREFIX], root).split('\0').filter(Boolean)
+  const staged = new Map()
+  for (const entry of entries) {
+    const match = /^(\d+) ([a-f0-9]{40}) (\d)\t([\s\S]+)$/.exec(entry)
+    if (!match || match[3] !== '0') throw new Error('visual gate requires a resolved Git index')
+    staged.set(match[4], match[2])
+  }
+  const indexPaths = files.filter(path => staged.has(path))
+  const index = readGitBlobs(indexPaths.map(path => `:${path}`), { root })
+  const errors = []
+  for (const path of files) {
+    const previous = (snapshot.files[path]?.identities ?? []).map(identity => ({ identity }))
+    const surfaces = []
+    if (existsSync(resolve(root, path))) surfaces.push(['worktree', readFileSync(resolve(root, path), 'utf8')])
+    if (index.has(`:${path}`)) surfaces.push(['index', index.get(`:${path}`)])
+    for (const [surface, source] of surfaces) {
+      for (const hit of unknownLayerTokenFindings(source, path))
+        errors.push(`${path}:${hit.line}: unknown z-index token ${hit.value} [${surface}]; define it in design/zindex.css or reuse an existing semantic token`)
+      for (const hit of newVisualFindings(visualFindings(source, path), previous))
+        errors.push(`${path}:${hit.line}: fixed visual ${hit.kind} ${hit.value} [${surface}]; reuse UI props or --vds-* (${VISUAL_BASE})`)
+    }
+  }
+  return [...new Set(errors)]
+}
+
 /** Inspect worktree AND index against an immutable origin; missing history fails closed. */
 export function visualErrors({ root = ROOT, base = VISUAL_BASE } = {}) {
   const errors = []
   const bases = [...new Set([VISUAL_BASE, base])]
-  const current = candidates(git(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', PREFIX], root).split('\0').filter(Boolean))
+  const current = visualCandidates(git(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', PREFIX], root).split('\0').filter(Boolean))
   const indexed = new Set(git(['ls-files', '-z', '--', PREFIX], root).split('\0').filter(Boolean))
   for (const ref of bases) {
-    const commit = git(['rev-parse', '--verify', `${ref}^{commit}`], root).trim()
+    let commit
+    try {
+      execFileSync('git', ['cat-file', '-e', `${ref}^{commit}`], { cwd: root, stdio: 'pipe' })
+      commit = git(['rev-parse', '--verify', `${ref}^{commit}`], root).trim()
+    } catch (error) {
+      if (ref !== VISUAL_BASE || error.status !== 128) throw error
+      errors.push(...visualSnapshotErrors({ root }))
+      continue
+    }
     const previousFiles = new Set(git(['ls-tree', '-r', '--name-only', '-z', commit, '--', PREFIX], root).split('\0').filter(Boolean))
     // Read only changed files. Untracked source files still have a zero budget.
     const changed = new Set(git(['diff', '--name-only', '-z', commit, '--', PREFIX], root).split('\0').filter(Boolean))

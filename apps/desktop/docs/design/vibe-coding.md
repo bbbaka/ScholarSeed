@@ -131,6 +131,9 @@ Counterexamples: importing a nonexistent FormPage; copying SettingsPageHeader an
 
 [The new-visual-value gate](visual-gate.md) is wired into docs:check and npm test. It rejects new fixed styles by owner, full value, and count; the registry, barrel, preview, and type checks constrain discoverable APIs. These checks do not prove component choice or visual quality.
 **required**: New fixed visual values and numeric layers must pass the Desktop standards gate. Passing the gate does not replace real-theme, narrow-window, keyboard, and interaction verification.
+When the audited historical Git commit is unavailable, the visual gate uses its checked-in, integrity-verified finding snapshot; a missing or detector-incompatible snapshot fails closed. It never substitutes the current revision as the baseline.
+历史审计提交不可用时，视觉门禁使用经过完整性和检测规则校验的原始结果快照，不以当前版本替代基线。
+After a detector change, regenerate it from the exact audited commit with `node apps/desktop/scripts/ci/visualsnapshot.mjs`, review the result, and update its checksum in `visual.mjs`.
 Before delivery, run docs:write, docs:check, npm test, typecheck, and relevant real-product flows, and inspect the screenshots.
 
 For each acceptance run, record the page entry point, composition type, components used, theme/window/long-content/keyboard states, screenshots, and interaction results.

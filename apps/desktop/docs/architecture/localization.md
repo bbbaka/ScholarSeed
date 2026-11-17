@@ -126,7 +126,13 @@ export function formatted(language: 'zh' | 'en', amount: number, timestamp: numb
 <a id="增量检查与债务收紧"></a>
 ### Incremental Checks and Debt Tightening
 
-`npm run i18n:check -- --base <ref>` uses an explicit commit/ref; `I18N_BASE_REF` can also be set. If none is specified locally, use the immutable baseCommit recorded in the debt inventory and print the resolved value; a missing/invalid ref must fail. CI uses the MR diff base, before SHA, or default-branch merge-base; do not hard-code a branch name.
+`npm run i18n:check -- --base <ref>` uses an explicit commit/ref; `I18N_BASE_REF` can also be set. An explicit missing or invalid ref must fail. Without an override, use the immutable baseCommit recorded in the debt inventory. If that exact audited commit is absent, the checker uses its checked-in, integrity-verified finding snapshot; a missing, changed, or detector-incompatible snapshot fails closed. CI uses the MR diff base, before SHA, or default-branch merge-base; do not hard-code a branch name.
+
+显式指定的基线不存在时必须报错；默认审计提交缺失时，仅允许使用校验完整性及检测规则版本的原始快照，不能将当前代码作为新基线。
+
+To regenerate the snapshot after a detector change, obtain the exact audited commit, run
+`node apps/desktop/scripts/ci/localization/snapshot.mjs`, review the generated identities, and
+update the expected checksum in `localization/git.mjs`. The generator never adopts `HEAD` as a baseline.
 
 Scan the staged snapshot and working-tree content separately, including untracked source; an unstaged fix cannot mask hard-coded copy in the staged snapshot. When Desktop has staged changes, also reconstruct the complete staged tree in a temporary directory and independently run resource integrity, generated-drift, call-parameter, and TypeScript checks against it; unstaged resource or type fixes cannot be borrowed. The temporary tree reuses installed dependencies only, does not run staged package scripts, is automatically cleaned after checks, and does not modify the real index. Added/changed copy receives a historical exemption only if it appears both in the comparison-baseline nodes and the reviewed debt inventory. Identity consists of owner, syntax kind, and text; duplicate counts are preserved, with no credit by line number or total file count. Comments, logs, and protocol declarations do not fail when outside visible syntax positions; tests/fixtures are explicit input examples and are not scanned as product copy. New files have no debt.
 

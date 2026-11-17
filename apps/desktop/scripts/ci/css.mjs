@@ -28,7 +28,7 @@ export function cssInventory(source, path = 'source.css') {
     }
     for (const child of node.nodes ?? []) if (child.type !== 'decl') visit(child, context)
   }
-  const root = postcss.parse(source, { from: path })
+  const root = postcss.parse(source.replaceAll('\r\n', '\n'), { from: path })
   for (const node of root.nodes) visit(node, [])
   return entries
 }
@@ -61,7 +61,7 @@ export function cssDebtErrors(sources, baseline, exceptions = []) {
   for (const [path, source] of sources) {
     const allowed = new Map()
     for (const entry of baseline[path] ?? []) allowed.set(entry.digest, (allowed.get(entry.digest) ?? 0) + 1)
-    const root = postcss.parse(source, { from: path })
+    const root = postcss.parse(source.replaceAll('\r\n', '\n'), { from: path })
     const tailwindEntry = root.nodes.some((node) => node.type === 'atrule' && node.name === 'import' && !node.nodes && TAILWIND_IMPORT.test(node.params))
     for (const node of [...root.nodes]) {
       if (node.type !== 'atrule' || node.nodes) continue

@@ -80,6 +80,7 @@ test('discovery reader keeps citations in supporting lists and discussion in the
     page.on('pageerror', (error) => errors.push(error.message))
     await page.setContent('<div id="root"></div>')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    await expect(page.getByRole('link', { name: 'arXiv：2611.09061' })).toBeVisible()
     await expect(page.getByRole('tab', { name: '概述', exact: true })).toHaveAttribute(
       'aria-selected',
       'true'
@@ -102,6 +103,7 @@ test('discovery reader keeps citations in supporting lists and discussion in the
     await page.getByRole('button', { name: '与书深 AI 对话', exact: true }).click()
     await expect(page.getByText('Discussion requested')).toBeVisible()
     await page.getByRole('button', { name: 'English', exact: true }).click()
+    await expect(page.getByRole('link', { name: 'arXiv:2611.09061' })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute(
       'aria-selected',
       'true'

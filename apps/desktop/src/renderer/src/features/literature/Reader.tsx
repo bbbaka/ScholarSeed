@@ -275,7 +275,9 @@ export function Reader({
                       onOriginal(identifier.url)
                     }}
                   >
-                    {identifier.label}
+                    {identifier.kind === 'doi'
+                      ? t('discovery.curated.doi', { value: identifier.value })
+                      : t('discovery.curated.arxiv', { value: identifier.value })}
                   </Link>
                 )}
               </div>

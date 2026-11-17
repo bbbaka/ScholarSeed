@@ -32,6 +32,9 @@ test('index calls, resources and generated types cannot borrow unstaged fixes', 
     for (const language of ['zh', 'en']) write(`src/localization/locales/${language}/foundation.json`, JSON.stringify(resources[language].foundation))
     git('add', 'apps', 'scripts', 'packages', 'skills'); git('commit', '-qm', 'fixture baseline')
     assert.deepEqual(checkStaged(options), { checked: false, errors: [] })
+    write('src/localization/types.d.ts', types.replaceAll('\n', '\r\n'))
+    assert.deepEqual(checkResourceFiles({ desktop }), resources, 'Windows line endings must not change generated content')
+    write('src/localization/types.d.ts', types)
 
     write('src/main/messages.ts', code.replace(", {name:'Ada'}", ''))
     git('add', 'apps')
@@ -85,7 +88,7 @@ test('index checks include the exact Review JSON dependency without borrowing un
   const options = { root, dependencies: resolve(DESKTOP, 'node_modules') }
   const resources = { zh: { foundation: { title: '预览' } }, en: { foundation: { title: 'Preview' } } }
   const dependency = 'skills/community/literature-review/components/review.json'
-  const code = `import review from '../../../../skills/community/literature-review/components/review.json'; export const title: string = review.title;`
+  const code = `import review from '../../../../skills/community/literature-review/components/review.json'; import iterations from '../../../../PDFE-iterations.json'; export const title: string = review.title; export const iteration: string = iterations.title;`
   const config = JSON.stringify({ compilerOptions: { module: 'ESNext', target: 'ES2022', moduleResolution: 'Bundler', resolveJsonModule: true, strict: true, skipLibCheck: true, noEmit: true, types: ['node'] }, include: ['src/**/*.ts'] })
   try {
     git('init', '-q'); git('config', 'user.name', 'Contract Fixture'); git('config', 'user.email', 'fixture@example.invalid')
@@ -94,11 +97,12 @@ test('index checks include the exact Review JSON dependency without borrowing un
     write('apps/desktop/tsconfig.json', JSON.stringify({ references: [{ path: './tsconfig.web.json' }, { path: './tsconfig.node.json' }] }))
     write('apps/desktop/src/main/messages.ts', code)
     write(dependency, JSON.stringify({ title: 'Review snapshot' }))
+    write('PDFE-iterations.json', JSON.stringify({ title: 'Iteration snapshot' }))
     write('apps/desktop/src/localization/catalog.ts', 'export const LOCALES={zh:{},en:{}} as const')
     write('apps/desktop/src/localization/types.d.ts', generateTypes(resources))
     write('apps/desktop/src/localization/resources.ts', generateRegistration(resources))
     for (const language of ['zh', 'en']) write(`apps/desktop/src/localization/locales/${language}/foundation.json`, JSON.stringify(resources[language].foundation))
-    git('add', 'apps', 'skills'); git('commit', '-qm', 'fixture baseline')
+    git('add', 'apps', 'skills', 'PDFE-iterations.json'); git('commit', '-qm', 'fixture baseline')
     write('apps/desktop/src/main/messages.ts', code + '\n')
     git('add', 'apps')
     assert.deepEqual(checkStaged(options), { checked: true, errors: [] })
@@ -111,5 +115,9 @@ test('index checks include the exact Review JSON dependency without borrowing un
     write(dependency, JSON.stringify({ title: 'Review snapshot' }))
     git('add', dependency)
     assert.deepEqual(checkStaged(options), { checked: true, errors: [] })
+    write('PDFE-iterations.json', JSON.stringify({ title: 42 }))
+    assert.deepEqual(checkStaged(options), { checked: true, errors: [] }, 'iteration data must come from the index')
+    git('add', 'PDFE-iterations.json')
+    assert.match(checkStaged(options).errors.join(), /\[index\].*Type 'number' is not assignable to type 'string'/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

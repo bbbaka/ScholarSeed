@@ -63,7 +63,7 @@ test('resource tree depth uses custom properties without relaxing visual inline 
 })
 
 test('Desktop E2E CI installs the Electron runtime before launching smoke tests', () => {
-  const pipeline = readFileSync(new URL('.gitlab-ci.yml', REPOSITORY_ROOT), 'utf8')
+  const pipeline = readFileSync(new URL('.gitlab-ci.yml', REPOSITORY_ROOT), 'utf8').replaceAll('\r\n', '\n')
   const job = pipeline.match(/desktop-e2e-smoke:\n([\s\S]*?)(?=\n[^\s#][^\n]*:\n|$)/)?.[1] ?? ''
   assert.ok(job.includes('npm ci --no-audit --no-fund'))
   assert.ok(!job.includes('npm ci --ignore-scripts'))
@@ -226,6 +226,8 @@ test('CSS identities allow old rules and deletions, reject replacement and new f
   const source = '.legacy { display: flex; color: var(--vds-text-primary); }'
   const baseline = { 'old.css': cssInventory(source) }
   assert.deepEqual(cssDebtErrors([['old.css', `/* comment */ ${source}`]], baseline), [])
+  const multiline = '.legacy,\n.other { display: flex; }'
+  assert.deepEqual(cssDebtErrors([['old.css', multiline.replaceAll('\n', '\r\n')]], { 'old.css': cssInventory(multiline) }), [])
   assert.deepEqual(cssDebtErrors([['old.css', '']], baseline), [])
   assert.match(cssDebtErrors([['old.css', '.new { display: flex; }']], baseline).join('\n'), /new or changed/)
   assert.match(cssDebtErrors([['old.css', source.replace('flex', 'grid')]], baseline).join('\n'), /new or changed/)

@@ -143,14 +143,16 @@ test('related fallback excludes self and duplicate references and tolerates miss
 test('reader identifiers link to DOI and arXiv instead of displaying only venue details', () => {
   const journal = CURATED_PAPERS.find((paper) => paper.id === 'flip')!
   assert.deepEqual(paperIdentifier(journal.metadata), {
-    label: `DOI: ${journal.metadata.doi}`,
+    kind: 'doi',
+    value: journal.metadata.doi,
     url: `https://doi.org/${journal.metadata.doi}`,
   })
   const preprint = CURATED_PAPERS.find((paper) => paper.metadata.arxiv_id)!
-  assert.equal(
-    paperIdentifier(preprint.metadata)?.url,
-    `https://arxiv.org/abs/${preprint.metadata.arxiv_id}`
-  )
+  assert.deepEqual(paperIdentifier(preprint.metadata), {
+    kind: 'arxiv',
+    value: preprint.metadata.arxiv_id,
+    url: `https://arxiv.org/abs/${preprint.metadata.arxiv_id}`,
+  })
   assert.equal(paperIdentifier({ ...journal.metadata, doi: '', arxiv_id: '' }), null)
 })
 
